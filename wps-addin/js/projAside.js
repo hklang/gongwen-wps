@@ -81,6 +81,11 @@
         '<button type="button" class="file-sec-act" data-cloud-templates ' +
         'title="浏览云端骨架并下载到本机模板夹">☁ 云端</button>';
     }
+    if (key === "versions") {
+      html +=
+        '<button type="button" class="file-sec-act" data-save-version ' +
+        'title="把当前窗口打开的文档存一份到版本文件夹">存版本</button>';
+    }
     html += '</div><div class="file-sec-body">';
     if (!list.length) {
       html +=
@@ -90,7 +95,9 @@
             ? "仅显示 doc / docx；放入「素材」后刷新"
             : key === "templates"
               ? "点「☁ 云端」下载；右键「引用」或「用 WPS 打开」"
-              : "（空）")) +
+              : key === "versions"
+                ? "点「存版本」保存当前文档快照"
+                : "（空）")) +
         "</div>";
     } else {
       list.forEach(function (it) {
@@ -181,11 +188,19 @@
       return;
     }
     if (!r.ok) {
+      if (r.root) renderProjectFiles(true);
       setStatus(r.error || "改绑失败", "err");
+      try {
+        if (r.error) alert(r.error);
+      } catch (a0) {}
       return;
     }
     renderProjectFiles(true);
-    setStatus("已改绑：" + (r.name || r.root), "ok");
+    var created =
+      r.created && r.created.length
+        ? "；已建 " + r.created.join("、")
+        : "；工程夹已就绪";
+    setStatus("已改绑：" + (r.name || r.root) + created, "ok");
   }
 
   function paintSelection() {
@@ -321,6 +336,30 @@
       }
       if (e.target.closest("[data-cloud-templates]")) {
         setStatus("「☁ 云端」待接双轨模板", "warn");
+        return;
+      }
+      if (e.target.closest("[data-save-version]")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setStatus("正在存版本…", "");
+        var sv;
+        try {
+          sv = GwProject.saveActiveToVersion();
+        } catch (err) {
+          setStatus("存版本异常：" + (err.message || err), "err");
+          return;
+        }
+        if (!sv || !sv.ok) {
+          var errMsg = (sv && sv.error) || "存版本失败";
+          setStatus(errMsg.split("\n")[0], "err");
+          try {
+            alert(errMsg);
+          } catch (a0) {}
+          return;
+        }
+        renderProjectFiles(true);
+        if (sv.warn) setStatus(sv.warn + " → " + shortName(sv.path), "warn");
+        else setStatus("已存版本：" + shortName(sv.path), "ok");
         return;
       }
       var head = e.target.closest("[data-sec-toggle]");

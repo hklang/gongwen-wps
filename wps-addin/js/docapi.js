@@ -22,7 +22,8 @@
 
   function getSelectionInfo() {
     var s = selection();
-    var t = cleanText(s.Text);
+    var raw = String(s.Text == null ? "" : s.Text);
+    var t = cleanText(raw);
     var start = 0;
     var end = 0;
     try {
@@ -30,21 +31,80 @@
       end = s.End;
     } catch (e) {}
     var paraIdx = indexOfParagraph(s.Paragraphs.Item(1));
+    var endsWithPara = /\r$/.test(raw) || /\n$/.test(t);
+    if (!endsWithPara) {
+      try {
+        var last = s.Paragraphs.Item(s.Paragraphs.Count);
+        if (last && end >= last.Range.End) endsWithPara = true;
+      } catch (e2) {}
+    }
     return {
       text: t,
       start: start,
       end: end,
       empty: !t.replace(/\s/g, ""),
       paraIndex: paraIdx,
-      heading: headingInfo(s.Paragraphs.Item(1))
+      heading: headingInfo(s.Paragraphs.Item(1)),
+      endsWithPara: endsWithPara
     };
   }
 
-  function replaceSelection(text) {
+  /** 把正文规范成 WPS 可写回的段文本 */
+  function toWordText(text, endsWithPara) {
+    var out = String(text == null ? "" : text);
+    out = out.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    out = out.replace(/[ \t]+$/g, "");
+    out = out.replace(/\n+$/g, "");
+    out = out.replace(/\n/g, "\r");
+    if (endsWithPara) out += "\r";
+    return out;
+  }
+
+  /**
+   * 写回选区。Word/WPS 段标记是 \r；若原选区含段末 \r 而新稿没有，
+   * 会吞掉回车、与下一段粘连——必须保留。
+   */
+  function replaceSelection(text, opts) {
+    opts = opts || {};
     var s = selection();
-    var cur = cleanText(s.Text);
+    var raw = String(s.Text == null ? "" : s.Text);
+    var cur = cleanText(raw);
     if (!cur.replace(/\s/g, "")) throw new Error("请先划选要改的正文");
-    s.Text = String(text == null ? "" : text);
+    var endedWithPara =
+      opts.endsWithPara != null
+        ? !!opts.endsWithPara
+        : /\r$/.test(raw) || /\n$/.test(cur);
+    s.Text = toWordText(text, endedWithPara);
+  }
+
+  /**
+   * 按文档绝对范围写回（精修钉子），返回新 start/end。
+   * 比 Selection 更稳：不依赖当前光标是否还在选区上。
+   */
+  function replaceRange(start, end, text, opts) {
+    opts = opts || {};
+    if (typeof start !== "number" || typeof end !== "number" || end <= start) {
+      throw new Error("选区锚点已失效，请重新钉住后再试");
+    }
+    var d = doc();
+    var rng = d.Range(start, end);
+    var raw = String(rng.Text == null ? "" : rng.Text);
+    var cur = cleanText(raw);
+    if (!cur.replace(/\s/g, "") && !opts.allowEmpty) {
+      throw new Error("选区锚点已失效，请重新钉住后再试");
+    }
+    var endedWithPara =
+      opts.endsWithPara != null
+        ? !!opts.endsWithPara
+        : /\r$/.test(raw) || /\n$/.test(cur);
+    var out = toWordText(text, endedWithPara);
+    rng.Text = out;
+    var ns = rng.Start;
+    var ne = rng.End;
+    try {
+      selectRange(ns, ne);
+    } catch (eSel) {}
+    return { start: ns, end: ne, text: cleanText(out), endsWithPara: endedWithPara };
   }
 
   function getDocumentText() {
@@ -385,6 +445,7 @@
     clearPaint: clearPaint,
     highlightRange: highlightRange,
     replaceSelection: replaceSelection,
+    replaceRange: replaceRange,
     getDocumentText: getDocumentText,
     selectCurrentParagraph: selectCurrentParagraph,
     listHeadings: listHeadings,

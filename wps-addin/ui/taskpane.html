@@ -9,6 +9,7 @@
   <script type="text/javascript" src="../js/followHost.js"></script>
   <script type="text/javascript" src="../js/docapi.js"></script>
   <script type="text/javascript" src="../js/relay.js"></script>
+  <script type="text/javascript" src="../js/account.js"></script>
   <script type="text/javascript" src="../js/projectRoot.js"></script>
   <script type="text/javascript" src="../js/taskpane.js"></script>
   <script type="text/javascript">
@@ -65,6 +66,7 @@
             <span class="ai-sel-x" id="aiSelClear" hidden title="清除">×</span>
           </button>
           <button type="button" class="ai-sel-btn primary-ish" id="aiSelCommit" title="把当前划选钉到右侧">钉住</button>
+          <button type="button" class="ai-reselect" id="aiRestore" title="还原为出方案前的原文" hidden>还原</button>
         </div>
         <label class="ai-expand-sib" id="aiExpandSibWrap" hidden title="钉住时并入同级标题">
           <input type="checkbox" id="aiExpandSib" />
@@ -104,7 +106,7 @@
       </div>
       <div class="ai-compose-foot" id="aiComposeFoot">
         <span class="ai-edit-status" id="aiEditStatus">WPS</span>
-        <span class="ai-tip" id="aiTip">登录稍后接；有短票则自动用</span>
+        <span class="ai-tip" id="aiTip">未登录 · 点右上角登录后可对话</span>
       </div>
     </div>
   </aside>

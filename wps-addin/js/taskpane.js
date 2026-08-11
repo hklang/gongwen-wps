@@ -10,7 +10,11 @@
     work: null,
     selPopOpen: false,
     busy: false,
-    liveTimer: null
+    liveTimer: null,
+    previewId: null,
+    adoptedId: null,
+    optView: "diff",
+    suiteBaseline: ""
   };
 
   function $(id) {
@@ -122,7 +126,7 @@
     } catch (e) {
       return state.live;
     }
-    var t = info ? String(info.text || "").replace(/\s+$/, "") : "";
+    var t = info ? String(info.text || "").replace(/[ \t]+$/g, "") : "";
     if (!t.replace(/\s/g, "")) return state.live;
     /* 同级多选后 Selection 常停在首行，勿把 live 冲成单行 */
     if (
@@ -138,7 +142,8 @@
       text: t,
       start: info.start,
       end: info.end,
-      heading: info.heading || null
+      heading: info.heading || null,
+      endsWithPara: !!info.endsWithPara || /\n$/.test(t)
     };
     if (!snapshotEqual(state.live, next)) {
       state.live = next;
@@ -239,23 +244,57 @@
     return !!(el && el.checked && state.tab === "suite");
   }
 
+  function clearSuiteSuggestions() {
+    state.options = [];
+    state.previewId = null;
+    state.adoptedId = null;
+    state.suiteBaseline = "";
+  }
+
+  /**
+   * 换钉前：若正文上叠着预览，先还原到出方案原文，再清方案。
+   * 对标旧版 clearAiSuiteState：新选定 = 旧建议作废。
+   */
+  function resetSuiteForNewPin() {
+    if (
+      state.tab === "suite" &&
+      state.work &&
+      state.suiteBaseline &&
+      (state.previewId || state.adoptedId)
+    ) {
+      try {
+        writeWorkText(state.suiteBaseline);
+      } catch (e) {
+        /* 锚点失效则仍清状态，避免旧方案挂在新钉子上 */
+      }
+    }
+    clearSuiteSuggestions();
+    syncRestoreBtn();
+  }
+
   function setWorkFromSnapshot(snap, extras) {
     extras = extras || {};
+    /* 钉住即换工作选区：旧精修建议作废 */
+    resetSuiteForNewPin();
     state.work = {
       text: snap.text,
       start: snap.start,
       end: snap.end,
       heading: snap.heading || null,
-      items: extras.items || null
+      items: extras.items || null,
+      endsWithPara: !!snap.endsWithPara
     };
     state.selPopOpen = false;
     renderWorkChip();
+    renderOpts();
+    syncTabUi();
     var n = (extras.items && extras.items.length) || 1;
     tip(
       "已钉住 · " +
         charCount(snap.text) +
         " 字" +
-        (n > 1 ? " · 同级×" + n : "")
+        (n > 1 ? " · 同级×" + n : "") +
+        (state.tab === "suite" ? " · 可出方案" : "")
     );
     return state.work;
   }
@@ -293,13 +332,14 @@
     var snap = null;
     try {
       var info = GwDoc.getSelectionInfo();
-      var t = info ? String(info.text || "").replace(/\s+$/, "") : "";
+      var t = info ? String(info.text || "").replace(/[ \t]+$/g, "") : "";
       if (t.replace(/\s/g, "")) {
         snap = {
           text: t,
           start: info.start,
           end: info.end,
-          heading: info.heading || null
+          heading: info.heading || null,
+          endsWithPara: !!info.endsWithPara || /\n$/.test(t)
         };
         state.live = snap;
       }
@@ -313,14 +353,33 @@
       if (opts.alert) tip("请先在正文划选");
       return null;
     }
+    /* 划到段尾却未带上 \r 时：若 end 已顶到段末标记，仍按段末处理 */
+    if (!snap.endsWithPara && typeof snap.end === "number") {
+      try {
+        var probe = GwDoc.getSelectionInfo();
+        if (probe && probe.endsWithPara) snap.endsWithPara = true;
+      } catch (e3) {}
+    }
     return setWorkFromSnapshot(snap, {});
   }
 
   function clearWork(ev) {
     if (ev && ev.stopPropagation) ev.stopPropagation();
+    if (
+      state.work &&
+      state.suiteBaseline &&
+      (state.previewId || state.adoptedId)
+    ) {
+      try {
+        writeWorkText(state.suiteBaseline);
+      } catch (e) {}
+    }
     state.work = null;
+    clearSuiteSuggestions();
     state.selPopOpen = false;
+    syncRestoreBtn();
     renderWorkChip();
+    renderOpts();
     tip("已清除");
   }
 
@@ -336,6 +395,228 @@
     } catch (e) {}
   }
 
+  function escHtml(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function diffPlain(oldStr, newStr) {
+    var a = String(oldStr || "").split("");
+    var b = String(newStr || "").split("");
+    var n = a.length;
+    var m = b.length;
+    if (!n && !m) return { html: "", del: 0, ins: 0 };
+    if (n * m > 400000) {
+      return {
+        html:
+          (n ? '<span class="diff-del">' + escHtml(oldStr) + "</span>" : "") +
+          (m ? '<ins class="diff-ins">' + escHtml(newStr) + "</ins>" : ""),
+        del: n,
+        ins: m
+      };
+    }
+    var dp = [];
+    var i;
+    var j;
+    for (i = 0; i <= n; i++) {
+      dp[i] = new Array(m + 1);
+      for (j = 0; j <= m; j++) dp[i][j] = 0;
+    }
+    for (i = n - 1; i >= 0; i--) {
+      for (j = m - 1; j >= 0; j--) {
+        dp[i][j] =
+          a[i] === b[j]
+            ? dp[i + 1][j + 1] + 1
+            : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    var raw = [];
+    i = 0;
+    j = 0;
+    while (i < n && j < m) {
+      if (a[i] === b[j]) {
+        raw.push({ t: "eq", s: a[i] });
+        i += 1;
+        j += 1;
+      } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+        raw.push({ t: "del", s: a[i] });
+        i += 1;
+      } else {
+        raw.push({ t: "ins", s: b[j] });
+        j += 1;
+      }
+    }
+    while (i < n) {
+      raw.push({ t: "del", s: a[i] });
+      i += 1;
+    }
+    while (j < m) {
+      raw.push({ t: "ins", s: b[j] });
+      j += 1;
+    }
+    var parts = [];
+    raw.forEach(function (p) {
+      var last = parts[parts.length - 1];
+      if (last && last.t === p.t) last.s += p.s;
+      else parts.push({ t: p.t, s: p.s });
+    });
+    var del = 0;
+    var ins = 0;
+    var html = parts
+      .map(function (p) {
+        var e = escHtml(p.s);
+        if (p.t === "del") {
+          del += p.s.length;
+          return '<span class="diff-del">' + e + "</span>";
+        }
+        if (p.t === "ins") {
+          ins += p.s.length;
+          return '<ins class="diff-ins">' + e + "</ins>";
+        }
+        return e;
+      })
+      .join("");
+    return { html: html, del: del, ins: ins };
+  }
+
+  function suiteBaselineText() {
+    return state.suiteBaseline || (state.work && state.work.text) || "";
+  }
+
+  function buildOptDiff(opt) {
+    var oldText = suiteBaselineText();
+    var newText = opt.md || "";
+    return diffPlain(oldText, newText);
+  }
+
+  function normalizeOptions(list) {
+    return (list || []).map(function (o, idx) {
+      return {
+        id: String((o && o.id) || String.fromCharCode(65 + idx)),
+        md: String((o && (o.md || o.text || o.content)) || ""),
+        note: (o && o.note) || "",
+        recommend: !!(o && o.recommend),
+        score: o && o.score,
+        items: o && o.items
+      };
+    });
+  }
+
+  function findOpt(id) {
+    for (var i = 0; i < state.options.length; i++) {
+      if (state.options[i].id === id) return state.options[i];
+    }
+    return null;
+  }
+
+  function syncRestoreBtn() {
+    var btn = $("aiRestore");
+    if (!btn) return;
+    /* 对标旧版：有 baseline 且已预览/采用才显示 */
+    var show =
+      state.tab === "suite" &&
+      !!(state.work && state.suiteBaseline && (state.previewId || state.adoptedId));
+    btn.hidden = !show;
+    if (show) btn.classList.add("show");
+    else btn.classList.remove("show");
+    btn.disabled = !!state.busy;
+  }
+
+  /** 按钉子范围写回；保留原段末标记，避免与下一段粘连 */
+  function writeWorkText(md) {
+    if (state.work && state.work.items && state.work.items.length > 1) {
+      tip("同级多条暂不支持一次写回，请取消扩选后单条精修");
+      alert("同级多标题暂不支持一次写回，请取消扩选后只精修一条。");
+      return false;
+    }
+    if (!state.work) throw new Error("请先钉住选区");
+    if (
+      typeof state.work.start !== "number" ||
+      typeof state.work.end !== "number"
+    ) {
+      throw new Error("选区锚点已失效，请重新钉住后再试");
+    }
+    var r = GwDoc.replaceRange(
+      state.work.start,
+      state.work.end,
+      md || "",
+      { endsWithPara: !!state.work.endsWithPara }
+    );
+    state.work.text = String(md || "");
+    state.work.start = r.start;
+    state.work.end = r.end;
+    renderWorkChip();
+    syncRestoreBtn();
+    return true;
+  }
+
+  function previewOpt(id) {
+    var opt = findOpt(id);
+    if (!opt || !state.work) return;
+    try {
+      /* 切换方案前先回到原文锚点内容，再叠新预览（对标 restoreDocPreview + apply） */
+      if (state.previewId && state.previewId !== id && state.suiteBaseline) {
+        if (!writeWorkText(state.suiteBaseline)) return;
+      }
+      if (!writeWorkText(opt.md || "")) return;
+      state.previewId = id;
+      state.adoptedId = null;
+      renderOpts();
+      syncTabUi();
+      tip("预览方案 " + id + "（已叠到正文）");
+    } catch (e) {
+      tip(e.message || "预览失败");
+      alert(e.message || e);
+    }
+  }
+
+  function adoptOpt(id) {
+    var opt = findOpt(id);
+    if (!opt || !state.work) return;
+    try {
+      if (state.previewId === id) {
+        /* 已在预览同一方案：正文已是目标，直接确认 */
+        state.adoptedId = id;
+        state.previewId = null;
+      } else {
+        if (state.previewId && state.suiteBaseline) {
+          if (!writeWorkText(state.suiteBaseline)) return;
+        }
+        if (!writeWorkText(opt.md || "")) return;
+        state.adoptedId = id;
+        state.previewId = null;
+      }
+      renderOpts();
+      syncTabUi();
+      tip("已采用方案 " + id + " · 可还原");
+    } catch (e) {
+      tip(e.message || "采用失败");
+      alert(e.message || e);
+    }
+  }
+
+  function restoreSuiteBaseline() {
+    if (state.busy) return;
+    if (!state.work || !state.suiteBaseline) {
+      tip("没有可还原的原文");
+      return;
+    }
+    try {
+      if (!writeWorkText(state.suiteBaseline)) return;
+      state.previewId = null;
+      state.adoptedId = null;
+      renderOpts();
+      syncTabUi();
+      tip("已还原为出方案前原文");
+    } catch (e) {
+      tip(e.message || "还原失败");
+      alert(e.message || e);
+    }
+  }
+
   function applyWorkReplace(md) {
     if (state.work && state.work.items && state.work.items.length > 1) {
       tip("同级多条暂不支持一次写回，请取消扩选后单条精修");
@@ -345,8 +626,12 @@
     restoreWorkRange();
     GwDoc.replaceSelection(md || "");
     state.work = null;
+    state.suiteBaseline = "";
+    state.previewId = null;
+    state.adoptedId = null;
     setSelPop(false);
     renderWorkChip();
+    syncRestoreBtn();
   }
 
   function syncTabUi() {
@@ -378,13 +663,35 @@
         : "问点什么，或点上方立意 / 搭架 / 充填…";
     $("aiSend").textContent =
       tab === "suite" ? (state.options.length ? "再出" : "出方案") : "发送";
-    tip(
-      tab === "suite"
-        ? "划选后点「钉住」；可反复换钉"
-        : tab === "proof"
-          ? "选范围后点开始校对"
-          : "撰写对话；授权改稿时可写回选区"
-    );
+    var status = $("aiEditStatus");
+    if (status) {
+      status.textContent =
+        tab === "suite"
+          ? state.previewId
+            ? "预览中"
+            : state.adoptedId
+              ? "已采用"
+              : "精修"
+          : "WPS";
+    }
+    if (tab === "suite" && state.options.length) {
+      tip(
+        state.previewId
+          ? "预览中 · 可还原或采用"
+          : state.adoptedId
+            ? "已采用 · 可还原"
+            : "精修会改写选定 · 可预览 / 采用"
+      );
+    } else {
+      tip(
+        tab === "suite"
+          ? "划选后点「钉住」；可反复换钉"
+          : tab === "proof"
+            ? "选范围后点开始校对"
+            : "撰写对话；授权改稿时可写回选区"
+      );
+    }
+    syncRestoreBtn();
     renderWorkChip();
     renderOpts();
   }
@@ -446,31 +753,99 @@
     if (state.tab === "suite") {
       if (!state.options.length) {
         box.innerHTML =
-          '<div class="ai-empty">划选后点「钉住」，再出方案；可随时换钉。</div>';
+          '<div class="ai-empty"><b>精修会改写选定</b>：划选并钉住 → 写要求或点快捷项 → 出方案 → 预览/采用</div>';
         return;
       }
-      state.options.forEach(function (opt, idx) {
+      var view = state.optView === "new" ? "new" : "diff";
+      state.options.forEach(function (opt) {
         var div = document.createElement("div");
-        div.className = "ai-opt";
+        var cls = "ai-opt";
+        if (opt.recommend) cls += " recommend";
+        if (state.adoptedId === opt.id) cls += " adopted";
+        else if (state.previewId === opt.id) cls += " chosen";
+        div.className = cls;
+        var badge =
+          state.adoptedId === opt.id
+            ? "已采用"
+            : state.previewId === opt.id
+              ? "预览中"
+              : "点击预览";
+        var adoptLabel =
+          state.adoptedId === opt.id
+            ? "已采用"
+            : state.adoptedId
+              ? "替换为此方案"
+              : "采用";
+        var diff = buildOptDiff(opt);
+        var bodyHtml =
+          view === "new" ? escHtml(opt.md || "") : diff.html || escHtml(opt.md || "");
+        var bodyCls = view === "new" ? "ai-body" : "ai-body diff-body";
         div.innerHTML =
-          '<div class="ai-opt-head"><span class="ai-tag">' +
-          String.fromCharCode(65 + idx) +
-          '</span><span>方案</span></div>' +
-          '<div class="ai-body"></div>' +
-          '<div class="ai-actions"><button type="button" class="primary">采用</button></div>';
-        div.querySelector(".ai-body").textContent = opt.md || "";
-        div.querySelector("button").onclick = function () {
-          try {
-            applyWorkReplace(opt.md || "");
-            div.classList.add("adopted");
-            tip("已写回选区");
-          } catch (e) {
-            tip(e.message);
-            alert(e.message);
-          }
-        };
+          '<div class="ai-opt-head">' +
+          '<span class="ai-tag">' +
+          escHtml(opt.id) +
+          "</span>" +
+          (opt.recommend ? '<span class="ai-rec">推荐</span>' : "") +
+          (opt.score ? "<span>" + escHtml(opt.score) + "分</span>" : "") +
+          "<span>" +
+          badge +
+          "</span>" +
+          '<div class="ai-view-tabs">' +
+          '<button type="button" data-ai-view="diff" class="' +
+          (view === "diff" ? "on" : "") +
+          '">对照</button>' +
+          '<button type="button" data-ai-view="new" class="' +
+          (view === "new" ? "on" : "") +
+          '">新稿</button>' +
+          "</div>" +
+          '<span class="diff-stat">删' +
+          diff.del +
+          " · 增" +
+          diff.ins +
+          "</span></div>" +
+          (opt.note
+            ? '<div class="ai-note">' + escHtml(opt.note) + "</div>"
+            : "") +
+          '<div class="' +
+          bodyCls +
+          '" data-ai-preview="' +
+          escHtml(opt.id) +
+          '">' +
+          bodyHtml +
+          "</div>" +
+          '<div class="ai-actions">' +
+          '<button type="button" data-ai-preview="' +
+          escHtml(opt.id) +
+          '">预览</button>' +
+          '<button type="button" class="primary" data-ai-adopt="' +
+          escHtml(opt.id) +
+          '"' +
+          (state.adoptedId === opt.id ? " disabled" : "") +
+          ">" +
+          adoptLabel +
+          "</button></div>";
         box.appendChild(div);
       });
+      box.onclick = function (ev) {
+        var t = ev.target;
+        if (!t) return;
+        var viewBtn = t.closest ? t.closest("[data-ai-view]") : null;
+        if (viewBtn) {
+          state.optView =
+            viewBtn.getAttribute("data-ai-view") === "new" ? "new" : "diff";
+          renderOpts();
+          return;
+        }
+        var adoptBtn = t.closest ? t.closest("[data-ai-adopt]") : null;
+        if (adoptBtn) {
+          adoptOpt(adoptBtn.getAttribute("data-ai-adopt"));
+          return;
+        }
+        var prev = t.closest ? t.closest("[data-ai-preview]") : null;
+        if (prev) {
+          previewOpt(prev.getAttribute("data-ai-preview"));
+        }
+      };
       return;
     }
 
@@ -515,6 +890,20 @@
     $("proofRun").disabled = !!on;
   }
 
+  function withLogin(fn) {
+    ensureBase();
+    if (window.GwAccount && GwAccount.requireLogin) {
+      return GwAccount.requireLogin().then(fn);
+    }
+    return GwRelay.ensureAccess().then(function (ok) {
+      if (!ok || !GwRelay.tokens().access) {
+        tip("请先登录账号");
+        throw Object.assign(new Error("请先登录账号"), { status: 401 });
+      }
+      return fn();
+    });
+  }
+
   function sendWrite() {
     var msg = ($("aiReq").value || "").trim();
     if (!msg) {
@@ -530,34 +919,41 @@
       document.querySelector('input[name="aiEditMode"]:checked') &&
       document.querySelector('input[name="aiEditMode"]:checked').value ===
         "auth";
-    state.chat.push({ role: "user", text: msg });
-    $("aiReq").value = "";
-    renderOpts();
-    setBusy(true);
-    tip("撰写中…");
-    ensureBase();
-    GwRelay.chat(msg, ctx, capability(), allow, mats)
-      .then(function (data) {
-        var reply = (data && data.reply) || "(空回复)";
-        state.chat.push({
-          role: "assistant",
-          text: reply,
-          allowApply: allow
+    withLogin(function () {
+      state.chat.push({ role: "user", text: msg });
+      $("aiReq").value = "";
+      renderOpts();
+      setBusy(true);
+      tip("撰写中…");
+      return GwRelay.chat(msg, ctx, capability(), allow, mats)
+        .then(function (data) {
+          var reply = (data && data.reply) || "(空回复)";
+          state.chat.push({
+            role: "assistant",
+            text: reply,
+            allowApply: allow
+          });
+          renderOpts();
+          tip("完成");
+        })
+        .catch(function (e) {
+          var msg =
+            (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
+            e.message ||
+            "失败";
+          tip(msg);
+          state.chat.push({
+            role: "assistant",
+            text: "失败：" + msg
+          });
+          renderOpts();
+        })
+        .then(function () {
+          setBusy(false);
         });
-        renderOpts();
-        tip("完成");
-      })
-      .catch(function (e) {
-        tip(e.message || "失败");
-        state.chat.push({
-          role: "assistant",
-          text: "失败：" + (e.message || e)
-        });
-        renderOpts();
-      })
-      .then(function () {
-        setBusy(false);
-      });
+    }).catch(function () {
+      /* 未登录已弹窗；勿再推失败气泡 */
+    });
   }
 
   function sendSuite() {
@@ -571,22 +967,41 @@
     }
     var req = ($("aiReq").value || "").trim() || "优化表述，更准确凝练";
     var mats = citedMaterials();
-    setBusy(true);
-    tip("出方案中…");
-    ensureBase();
-    GwRelay.suggest(workText(), req, capability(), mats)
-      .then(function (data) {
-        state.options = (data && data.options) || [];
-        syncTabUi();
-        tip("已出 " + state.options.length + " 案");
-      })
-      .catch(function (e) {
-        tip(e.message || "失败");
-        alert(e.message || e);
-      })
-      .then(function () {
-        setBusy(false);
-      });
+    withLogin(function () {
+      setBusy(true);
+      tip("出方案中…");
+      return GwRelay.suggest(workText(), req, capability(), mats)
+        .then(function (data) {
+          state.suiteBaseline = workText();
+          state.previewId = null;
+          state.adoptedId = null;
+          /* 出方案瞬间再确认段末标记，避免钉住时被 trim 丢了 */
+          if (state.work) {
+            try {
+              GwDoc.selectRange(state.work.start, state.work.end);
+              var pinInfo = GwDoc.getSelectionInfo();
+              if (pinInfo) {
+                state.work.endsWithPara =
+                  !!pinInfo.endsWithPara || /\n$/.test(pinInfo.text || "");
+              }
+            } catch (ePin) {}
+          }
+          state.options = normalizeOptions((data && data.options) || []);
+          syncTabUi();
+          tip("已出 " + state.options.length + " 案 · 可预览 / 采用");
+        })
+        .catch(function (e) {
+          var msg =
+            (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
+            e.message ||
+            "失败";
+          tip(msg);
+          alert(msg);
+        })
+        .then(function () {
+          setBusy(false);
+        });
+    }).catch(function () {});
   }
 
   function runProof() {
@@ -611,24 +1026,29 @@
       alert(scope === "selection" ? "请先划选并钉住" : "文档为空");
       return;
     }
-    setBusy(true);
-    tip("校对中…");
-    $("proofClear").disabled = false;
-    ensureBase();
-    GwRelay.proofread(text)
-      .then(function (data) {
-        state.proof =
-          (data && (data.results || (data.data && data.data.results))) || [];
-        renderOpts();
-        tip("发现 " + state.proof.length + " 处");
-      })
-      .catch(function (e) {
-        tip(e.message || "失败");
-        alert(e.message || e);
-      })
-      .then(function () {
-        setBusy(false);
-      });
+    withLogin(function () {
+      setBusy(true);
+      tip("校对中…");
+      $("proofClear").disabled = false;
+      return GwRelay.proofread(text)
+        .then(function (data) {
+          state.proof =
+            (data && (data.results || (data.data && data.data.results))) || [];
+          renderOpts();
+          tip("发现 " + state.proof.length + " 处");
+        })
+        .catch(function (e) {
+          var msg =
+            (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
+            e.message ||
+            "失败";
+          tip(msg);
+          alert(msg);
+        })
+        .then(function () {
+          setBusy(false);
+        });
+    }).catch(function () {});
   }
 
   function switchTab(tab) {
@@ -641,6 +1061,7 @@
 
   window.onload = function () {
     ensureBase();
+    if (window.GwAccount) GwAccount.init();
     syncTabUi();
     startLiveWatch();
 
@@ -746,9 +1167,19 @@
       if (state.tab === "suite") sendSuite();
       else sendWrite();
     };
+    var restoreBtn = $("aiRestore");
+    if (restoreBtn) {
+      restoreBtn.onclick = function () {
+        restoreSuiteBaseline();
+      };
+    }
     $("aiClearChat").onclick = function () {
       state.chat = [];
       state.options = [];
+      state.previewId = null;
+      state.adoptedId = null;
+      state.suiteBaseline = "";
+      syncRestoreBtn();
       renderOpts();
     };
     $("proofRun").onclick = runProof;

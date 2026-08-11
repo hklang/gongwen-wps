@@ -848,3 +848,147 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   height: 24px; padding: 0 8px; font-size: 11px;
   border: 1px solid #d6d3d1; border-radius: 5px; background: #fff; cursor: pointer;
 }
+
+#aiAside .ai-account-btn {
+  flex: 0 0 auto;
+  height: 26px;
+  max-width: 88px;
+  padding: 0 8px;
+  border: 1px solid #e2e5ea;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #0f3d56;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#aiAside .ai-account-btn.on {
+  border-color: #b7d4e8;
+  background: #eef6fb;
+}
+#aiAside .ai-account-btn:hover {
+  background: #eceff1;
+}
+
+.gw-acc-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+}
+.gw-acc-modal[hidden] { display: none !important; }
+.gw-acc-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.35);
+}
+.gw-acc-card {
+  position: relative;
+  width: min(360px, calc(100vw - 24px));
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(15, 23, 42, 0.18);
+  overflow: hidden;
+}
+.gw-acc-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 8px;
+}
+.gw-acc-head strong { font-size: 15px; color: #0f172a; }
+.gw-acc-x {
+  border: 0;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.gw-acc-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 14px 8px;
+}
+.gw-acc-tabs button {
+  border: 0;
+  background: #f1f5f9;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #64748b;
+  cursor: pointer;
+}
+.gw-acc-tabs button.on {
+  background: #0f3d56;
+  color: #fff;
+}
+.gw-acc-body { padding: 4px 14px 8px; }
+.gw-acc-field {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: #475569;
+}
+.gw-acc-field input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #e2e5ea;
+  border-radius: 6px;
+  font-size: 13px;
+  box-sizing: border-box;
+}
+.gw-acc-err {
+  margin: 0 0 8px;
+  color: #b91c1c;
+  font-size: 12px;
+}
+.gw-acc-email {
+  margin: 4px 0 8px;
+  font-size: 14px;
+  font-weight: 650;
+  color: #0f172a;
+  word-break: break-all;
+}
+.gw-acc-quota {
+  margin: 0;
+  font-size: 12.5px;
+  color: #475569;
+  line-height: 1.5;
+}
+.gw-acc-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 14px;
+  border-top: 1px solid #f1f5f9;
+}
+.gw-acc-foot .spacer { flex: 1; }
+.gw-acc-foot button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #e2e5ea;
+  border-radius: 6px;
+  background: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.gw-acc-foot button.primary {
+  border-color: #0f3d56;
+  background: #0f3d56;
+  color: #fff;
+  font-weight: 650;
+}
+.gw-acc-foot button:disabled { opacity: 0.55; cursor: default; }

@@ -326,27 +326,98 @@
   }
 
   function ensureProjectLayout(root) {
-    if (!root) return { ok: false, error: "无根路径" };
-    if (!hasDiskApi()) return { ok: false, error: "无磁盘 API（FileSystem/FSO）" };
+    if (!root) return { ok: false, error: "无根路径", created: [] };
+    if (!hasDiskApi()) {
+      return { ok: false, error: "无磁盘 API（FileSystem/FSO）", created: [] };
+    }
     try {
-      if (!fsExists(root)) return { ok: false, error: "目录不存在" };
+      var r = String(root || "").replace(/[\\\/]+$/, "");
+      if (!fsExists(r)) return { ok: false, error: "目录不存在：" + r, created: [] };
+      var created = [];
+      var missing = [];
       [MATERIAL_DIR, TEMPLATE_DIR, VERSION_DIR, META_DIR].forEach(function (sub) {
-        fsMkdir(joinRoot(root, sub));
+        var p = joinRoot(r, sub);
+        if (fsExists(p)) return;
+        if (fsMkdir(p) && fsExists(p)) created.push(sub);
+        else missing.push(sub);
       });
       try {
-        var meta = joinRoot(root, META_DIR + "\\wps.json");
+        var meta = joinRoot(r, META_DIR + "\\wps.json");
         if (!fsExists(meta)) {
-          fsWriteText(
+          var wrote = fsWriteText(
             meta,
             JSON.stringify({
               version: 1,
-              name: getName() || baseName(root.replace(/\\/g, "/")),
-              root: root
+              name: getName() || baseName(r.replace(/\\/g, "/")),
+              root: r,
+              updatedAt: new Date().toISOString()
             })
           );
+          if (wrote) created.push(".gongwen/wps.json");
         }
       } catch (eMeta) {}
-      return { ok: true };
+      if (missing.length) {
+        return {
+          ok: false,
+          error: "未能创建：" + missing.join("、"),
+          created: created,
+          missing: missing
+        };
+      }
+      return { ok: true, created: created, root: r };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e), created: [] };
+    }
+  }
+
+  function currentProjectStartPath() {
+    var resolved = resolveRoot();
+    if (resolved.root) return resolved.root;
+    var active = liftToProjectRoot(activeDocumentFolder());
+    return active || "";
+  }
+
+  function pickFolder() {
+    var app = global.Application;
+    if (!app || typeof app.FileDialog !== "function") {
+      return { ok: false, error: "当前环境无 FileDialog" };
+    }
+    try {
+      var start = currentProjectStartPath();
+      var dlg = app.FileDialog(4);
+      dlg.Title = "改绑公文工程文件夹（将创建 素材/模板/版本）";
+      try {
+        dlg.AllowMultiSelect = false;
+      } catch (eAllow) {}
+      if (start) {
+        try {
+          // 末尾必须带 \，否则会当成「文件夹名」而不是进入该目录
+          dlg.InitialFileName = String(start).replace(/[\\\/]+$/, "") + "\\";
+        } catch (eInit) {}
+      }
+      if (dlg.Show() !== -1) return { ok: false, cancelled: true };
+      var path = dlg.SelectedItems.Item(1);
+      if (!path) return { ok: false, error: "未选中文件夹" };
+      path = String(path).replace(/[\\\/]+$/, "");
+      setRoot(path, baseName(path.replace(/\\/g, "/")), true);
+      var layout = ensureProjectLayout(getRoot());
+      if (!layout.ok) {
+        return {
+          ok: false,
+          error: "已改绑，但工程夹创建失败：" + (layout.error || ""),
+          root: getRoot(),
+          name: getName(),
+          layout: layout
+        };
+      }
+      return {
+        ok: true,
+        root: getRoot(),
+        name: getName(),
+        source: "manual",
+        created: layout.created || [],
+        layout: layout
+      };
     } catch (e) {
       return { ok: false, error: String(e.message || e) };
     }
@@ -442,24 +513,6 @@
     try {
       storeSet(INDEX_KEY, JSON.stringify(idx || {}));
     } catch (e) {}
-  }
-
-  function pickFolder() {
-    var app = global.Application;
-    if (!app || typeof app.FileDialog !== "function") {
-      return { ok: false, error: "当前环境无 FileDialog" };
-    }
-    try {
-      var dlg = app.FileDialog(4);
-      dlg.Title = "改绑公文工程文件夹";
-      if (dlg.Show() !== -1) return { ok: false, cancelled: true };
-      var path = dlg.SelectedItems.Item(1);
-      if (!path) return { ok: false, error: "未选中文件夹" };
-      setRoot(path, "", true);
-      return { ok: true, root: getRoot(), name: getName(), source: "manual" };
-    } catch (e) {
-      return { ok: false, error: String(e.message || e) };
-    }
   }
 
   /** 取消手动改绑，恢复跟随当前文档 */
@@ -789,9 +842,224 @@
     return out;
   }
 
+  function pad2(n) {
+    n = Number(n) || 0;
+    return n < 10 ? "0" + n : String(n);
+  }
+
+  function versionTimeStamp() {
+    var d = new Date();
+    return (
+      d.getFullYear() +
+      pad2(d.getMonth() + 1) +
+      pad2(d.getDate()) +
+      "-" +
+      pad2(d.getHours()) +
+      pad2(d.getMinutes()) +
+      pad2(d.getSeconds())
+    );
+  }
+
+  function safeFileName(name) {
+    return String(name || "未命名")
+      .replace(/[\\\/:*?"<>|]/g, "_")
+      .replace(/\s+/g, " ")
+      .trim() || "未命名";
+  }
+
+  function fsCopyFile(src, dst) {
+    var a = normSlash(src);
+    var b = normSlash(dst);
+    var fs = getWpsFs();
+    if (fs) {
+      var copyFns = ["copyFileSync", "CopyFile", "copyFile", "CopySync"];
+      for (var ci = 0; ci < copyFns.length; ci++) {
+        var fn = copyFns[ci];
+        if (typeof fs[fn] !== "function") continue;
+        try {
+          fs[fn](a, b);
+          if (fsExists(b)) return true;
+        } catch (e) {}
+      }
+    }
+    var fso = getFso();
+    if (fso) {
+      try {
+        fso.CopyFile(a, b, true);
+        return fsExists(b);
+      } catch (e2) {}
+    }
+    return false;
+  }
+
+  function callDocSaveAs(doc, path) {
+    var p = normSlash(path);
+    var errs = [];
+    try {
+      if (doc.SaveAs2) {
+        doc.SaveAs2(p);
+        return { ok: true, via: "SaveAs2" };
+      }
+    } catch (e1) {
+      errs.push("SaveAs2:" + (e1.message || e1));
+    }
+    try {
+      if (doc.SaveAs2) {
+        doc.SaveAs2(p, 16);
+        return { ok: true, via: "SaveAs2/16" };
+      }
+    } catch (e1b) {
+      errs.push("SaveAs2/16:" + (e1b.message || e1b));
+    }
+    try {
+      if (doc.SaveAs) {
+        doc.SaveAs(p);
+        return { ok: true, via: "SaveAs" };
+      }
+    } catch (e2) {
+      errs.push("SaveAs:" + (e2.message || e2));
+    }
+    try {
+      if (doc.SaveCopyAs) {
+        doc.SaveCopyAs(p);
+        return { ok: true, via: "SaveCopyAs" };
+      }
+    } catch (e3) {
+      errs.push("SaveCopyAs:" + (e3.message || e3));
+    }
+    return { ok: false, error: errs.join(" | ") || "无可用 Save 方法" };
+  }
+
+  /**
+   * 将当前窗口活动文档存一份到 版本/，文件名：日期时间_原文件名
+   * 优先：磁盘复制；其次 SaveAs2 到版本后再还原原路径。
+   */
+  function saveActiveToVersion() {
+    var steps = [];
+    try {
+      var resolved = resolveRoot();
+      var root = resolved.root;
+      if (!root) {
+        return {
+          ok: false,
+          error: resolved.unsaved
+            ? "请先保存当前文档以确定工程目录"
+            : "无工程根，请先保存文档或改绑"
+        };
+      }
+      ensureProjectLayout(root);
+      steps.push("root=" + root);
+
+      var verDir = joinRoot(root, VERSION_DIR);
+      if (!fsExists(verDir) && !fsMkdir(verDir)) {
+        return { ok: false, error: "无法创建版本目录：\n" + verDir };
+      }
+
+      var app = global.Application;
+      if (!app || !app.ActiveDocument) {
+        return { ok: false, error: "当前无打开文档" };
+      }
+      var doc = app.ActiveDocument;
+      var rawName = "";
+      var full = "";
+      var wasSaved = true;
+      try {
+        rawName = String(doc.Name || "");
+      } catch (e0) {}
+      try {
+        full = String(doc.FullName || "");
+      } catch (e1) {}
+      try {
+        wasSaved = doc.Saved !== false;
+      } catch (e2) {}
+
+      if (!rawName) rawName = "未命名.docx";
+      if (!/\.docx?$/i.test(rawName)) rawName = rawName + ".docx";
+
+      var outName = versionTimeStamp() + "_" + safeFileName(rawName);
+      var rel = normRel(VERSION_DIR + "/" + outName);
+      var abs = joinRoot(root, rel);
+      steps.push("target=" + abs);
+
+      var hasDiskPath = !!(full && /[\\\/]/.test(full) && full !== rawName);
+
+      // A) 已落盘：Save 后 FileSystem 复制（不改当前路径）
+      if (hasDiskPath) {
+        try {
+          if (!wasSaved) doc.Save();
+        } catch (eSave) {
+          steps.push("Save原稿失败:" + (eSave.message || eSave));
+        }
+        if (fsCopyFile(full, abs) && fsExists(abs)) {
+          return { ok: true, path: rel, abs: abs, via: "copy" };
+        }
+        steps.push("copy失败");
+      } else {
+        steps.push("原稿未落盘");
+      }
+
+      // B) SaveCopyAs
+      try {
+        doc.SaveCopyAs(abs);
+        if (fsExists(abs)) {
+          return { ok: true, path: rel, abs: abs, via: "SaveCopyAs" };
+        }
+        steps.push("SaveCopyAs无文件");
+      } catch (eCopyAs) {
+        steps.push("SaveCopyAs:" + (eCopyAs.message || eCopyAs));
+      }
+
+      // C) SaveAs2 到版本 → 再 SaveAs2 回原路径
+      if (hasDiskPath) {
+        var r1 = callDocSaveAs(doc, abs);
+        steps.push("存版本:" + (r1.via || r1.error || "?"));
+        if (r1.ok && fsExists(abs)) {
+          var r2 = callDocSaveAs(doc, full);
+          steps.push("还原:" + (r2.via || r2.error || "?"));
+          try {
+            if (wasSaved) doc.Saved = true;
+          } catch (eSaved) {}
+          if (r2.ok) {
+            return { ok: true, path: rel, abs: abs, via: "SaveAs2-restore" };
+          }
+          return {
+            ok: true,
+            path: rel,
+            abs: abs,
+            via: "SaveAs2",
+            warn: "版本已写入，但还原原稿路径失败，请确认当前窗口是否仍是原文件"
+          };
+        }
+      } else {
+        var rNew = callDocSaveAs(doc, abs);
+        if (rNew.ok && fsExists(abs)) {
+          return {
+            ok: true,
+            path: rel,
+            abs: abs,
+            via: rNew.via,
+            warn: "原稿尚未存盘，已直接存到版本；当前窗口现为该版本文件"
+          };
+        }
+        steps.push("新稿另存:" + (rNew.error || "失败"));
+      }
+
+      return {
+        ok: false,
+        error: "存版本失败\n目标：" + abs + "\n" + steps.join("\n")
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: "存版本异常：" + String(e.message || e) + "\n" + steps.join("\n")
+      };
+    }
+  }
+
   global.GwProject = {
     ROOT_KEY: ROOT_KEY,
     CITE_KEY: CITE_KEY,
+    VERSION_DIR: VERSION_DIR,
     getRoot: getRoot,
     getName: getName,
     setRoot: setRoot,
@@ -809,6 +1077,7 @@
     setCitePaths: setCitePaths,
     absFromRel: absFromRel,
     openInWpsReadOnly: openInWpsReadOnly,
+    saveActiveToVersion: saveActiveToVersion,
     addCite: addCite,
     removeCite: removeCite,
     loadCitedMaterials: loadCitedMaterials,
