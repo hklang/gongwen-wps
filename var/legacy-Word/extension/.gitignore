@@ -1,0 +1,8 @@
+node_modules/
+out/
+logs/
+*.vsix
+.DS_Store
+fixtures/快照/
+# 联接到 Word/editor/vendor/vditor，勿提交副本
+media/vditor/

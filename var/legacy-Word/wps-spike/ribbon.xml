@@ -1,0 +1,13 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="GongwenSpikeHttpTab" label="公文助手" onAction="OnTabActivate">
+        <group id="GongwenSpikeHttpGroup" label="助手">
+          <button id="btnShowDialog" label="打开公文助手"
+                  onAction="OnAction" getEnabled="OnGetEnabled"
+                  getImage="GetImage" visible="true" size="large"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

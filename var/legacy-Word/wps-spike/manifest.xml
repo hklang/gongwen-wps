@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<JsPlugin>
+  <ApiVersion>1.0.0</ApiVersion>
+  <Name>GongwenSpikeHttp</Name>
+  <Description>公文尖刀 HTTP 调试（仅 wpsjs debug）</Description>
+</JsPlugin>

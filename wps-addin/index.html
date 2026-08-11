@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title></title>
+  <style>
+    html, body {
+      margin: 0 !important;
+      padding: 0 !important;
+      width: 0 !important;
+      height: 0 !important;
+      max-width: 0 !important;
+      max-height: 0 !important;
+      overflow: hidden !important;
+      background: transparent !important;
+      border: 0 !important;
+      position: fixed !important;
+      left: -9999px !important;
+      top: -9999px !important;
+    }
+  </style>
+  <script type="text/javascript" src="./main.js"></script>
+  <script>
+    (function () {
+      function lock() {
+        var css =
+          "margin:0!important;padding:0!important;width:0!important;height:0!important;" +
+          "max-height:0!important;overflow:hidden!important;background:transparent!important;" +
+          "position:fixed!important;left:-9999px!important;top:-9999px!important;";
+        try {
+          document.documentElement.style.cssText = css;
+          if (document.body) document.body.style.cssText = css;
+        } catch (e) {}
+      }
+      lock();
+      document.addEventListener("DOMContentLoaded", lock);
+      setInterval(lock, 1000);
+    })();
+  </script>
+</head>
+<body></body>
+</html>

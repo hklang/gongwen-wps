@@ -1,0 +1,320 @@
+/* 自 var/legacy-Word/editor/gongwen.css 抽出：#projAside 一比一 */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #f7f8fa;
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+#projAside {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 36px;
+  border-right: 1px solid #e2e5ea;
+  background: #f7f8fa;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+body.proj-aside-resizing,
+body.proj-aside-resizing #projAside {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.proj-aside-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#projAside.collapsed .proj-aside-main,
+#projAside.collapsed .proj-aside-resize {
+  display: none !important;
+}
+
+.proj-aside-rail {
+  display: none;
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  margin: 0;
+  padding: 12px 0;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+.proj-aside-rail:hover { background: #e2e8f0; color: #1d4ed8; }
+#projAside.collapsed .proj-aside-rail { display: block; }
+#projAside.collapsed {
+  width: 36px !important;
+  max-width: 36px;
+}
+
+.proj-aside-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+.proj-aside-resize::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.proj-aside-resize:hover::after,
+body.proj-aside-resizing .proj-aside-resize::after {
+  background: #93c5fd;
+}
+
+.proj-aside-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e2e5ea;
+}
+.proj-aside-head strong {
+  font-size: 12px;
+  color: #334155;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.proj-aside-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.proj-aside-actions .proj-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  line-height: 0;
+}
+.proj-aside-actions .proj-icon-btn:hover {
+  background: #e8edf3;
+  color: #1e293b;
+}
+.proj-aside-actions .proj-icon-btn:active {
+  background: #dde5ee;
+}
+
+.proj-aside-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 8px 12px;
+}
+
+.proj-aside-foot {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-top: 1px solid #e2e5ea;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.35;
+  min-height: 18px;
+}
+.proj-aside-foot.ok { color: #2e7d32; }
+.proj-aside-foot.warn { color: #ff8f00; }
+.proj-aside-foot.err { color: #c62828; }
+
+.file-sec { margin-top: 6px; }
+.file-sec-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.file-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.02em;
+  text-align: left;
+  box-sizing: border-box;
+}
+.file-sec-head:hover { background: #e8edf3; color: #334155; }
+.file-sec-act {
+  flex: 0 0 auto;
+  height: 22px;
+  margin: 0;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #2f5a86;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.file-sec-act:hover { background: #e8eef4; }
+.file-sec-caret {
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid #94a3b8;
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.file-sec:not(.folded) .file-sec-caret {
+  transform: rotate(90deg);
+}
+.file-sec-title { flex: 1 1 auto; min-width: 0; }
+.file-sec-count {
+  flex-shrink: 0;
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+.file-sec-body { padding: 2px 0 4px; }
+.file-sec.folded .file-sec-body { display: none; }
+
+.file-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: 6px;
+  padding: 0;
+  cursor: default;
+  font-size: 12.5px;
+  color: #0f172a;
+  box-sizing: border-box;
+}
+.file-item:hover { background: #eef2f7; }
+.file-item.current {
+  border-color: #fdba74;
+  background: #fffbeb;
+}
+.file-item.selected {
+  background: #e8f2f7;
+}
+.file-item.active-tpl {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+.file-item-main {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 6px 7px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 6px;
+  color: inherit;
+  font: inherit;
+}
+.file-item span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-item small {
+  display: block;
+  color: #94a3b8;
+  font-size: 10.5px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-empty {
+  color: #94a3b8;
+  font-size: 12px;
+  padding: 8px 6px;
+  line-height: 1.5;
+}
+
+.file-ctx-menu {
+  position: fixed;
+  z-index: 10050;
+  min-width: 88px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+.file-ctx-menu[hidden] { display: none !important; }
+.file-ctx-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 650;
+  color: #0f172a;
+  cursor: pointer;
+}
+.file-ctx-menu button:hover {
+  background: #e8f2f7;
+  color: #0f3d56;
+}
+.file-ctx-menu button[data-file-del] {
+  color: #be123c;
+}

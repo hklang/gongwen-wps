@@ -1,0 +1,167 @@
+{
+  "name": "gongwen-md",
+  "displayName": "公文 MD（本地安全编辑）",
+  "description": "本地 md + 快照；AI 经云中转出方案/采用。模型 Key 只在服务器。",
+  "version": "0.3.41",
+  "publisher": "local-gongwen",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCustomEditor:gongwen.md",
+    "onCommand:gongwen.openMdEditor",
+    "onCommand:gongwen.revealSnapDir",
+    "onCommand:gongwen.showLog",
+    "onCommand:gongwen.account.login",
+    "onCommand:gongwen.account.register",
+    "onCommand:gongwen.account.logout",
+    "onCommand:gongwen.account.status",
+    "onCommand:gongwen.official.sync",
+    "onCommand:gongwen.official.applyTemplate"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "gongwen.openMdEditor",
+        "title": "公文：用安全编辑器打开当前 MD"
+      },
+      {
+        "command": "gongwen.revealSnapDir",
+        "title": "公文：打开快照目录"
+      },
+      {
+        "command": "gongwen.showLog",
+        "title": "公文：显示调试日志"
+      },
+      {
+        "command": "gongwen.account.login",
+        "title": "公文：登录账号"
+      },
+      {
+        "command": "gongwen.account.register",
+        "title": "公文：注册账号"
+      },
+      {
+        "command": "gongwen.account.logout",
+        "title": "公文：退出登录"
+      },
+      {
+        "command": "gongwen.account.status",
+        "title": "公文：查看额度"
+      },
+      {
+        "command": "gongwen.official.sync",
+        "title": "公文：同步官方手册与模板"
+      },
+      {
+        "command": "gongwen.official.applyTemplate",
+        "title": "公文：用官方模板新建稿"
+      },
+      {
+        "command": "gongwen.clipboard.cut",
+        "title": "公文：剪切"
+      },
+      {
+        "command": "gongwen.clipboard.copy",
+        "title": "公文：复制"
+      },
+      {
+        "command": "gongwen.clipboard.paste",
+        "title": "公文：粘贴"
+      },
+      {
+        "command": "gongwen.clipboard.selectAll",
+        "title": "公文：全选"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "gongwen.clipboard.cut",
+        "key": "ctrl+x",
+        "mac": "cmd+x",
+        "when": "activeCustomEditorId == 'gongwen.md' && webviewFocus"
+      },
+      {
+        "command": "gongwen.clipboard.copy",
+        "key": "ctrl+c",
+        "mac": "cmd+c",
+        "when": "activeCustomEditorId == 'gongwen.md' && webviewFocus"
+      },
+      {
+        "command": "gongwen.clipboard.paste",
+        "key": "ctrl+v",
+        "mac": "cmd+v",
+        "when": "activeCustomEditorId == 'gongwen.md' && webviewFocus"
+      },
+      {
+        "command": "gongwen.clipboard.selectAll",
+        "key": "ctrl+a",
+        "mac": "cmd+a",
+        "when": "activeCustomEditorId == 'gongwen.md' && webviewFocus"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "gongwen.md",
+        "displayName": "公文 MD",
+        "selector": [
+          {
+            "filenamePattern": "*.md"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
+    "configuration": {
+      "title": "公文 MD",
+      "properties": {
+        "gongwen.serverUrl": {
+          "type": "string",
+          "default": "",
+          "description": "云中转地址，如 http://HOST:8080/gongwen-relay（模型 Key 只在服务器）"
+        },
+        "gongwen.relayToken": {
+          "type": "string",
+          "default": "",
+          "description": "【过渡】运维长期令牌；正式环境请用「公文：登录账号」短票，勿再依赖此项"
+        },
+        "gongwen.capability": {
+          "type": "string",
+          "enum": ["fast", "strong"],
+          "default": "fast",
+          "enumDescriptions": ["标准", "增强"],
+          "description": "智能能力档（标准/增强）；具体模型由云端路由，不在此选厂商"
+        },
+        "gongwen.defaultProvider": {
+          "type": "string",
+          "enum": ["deepseek", "minimax"],
+          "default": "deepseek",
+          "description": "【过渡/调试】默认厂商；登录短票模式下由服务端 model_routes 决定，客户端勿依赖"
+        },
+        "gongwen.snapshotKeep": {
+          "type": "number",
+          "default": 20,
+          "minimum": 5,
+          "maximum": 100,
+          "description": "每个 md 旁「快照」目录保留份数"
+        },
+        "gongwen.snapshotOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "保存 md 时自动写入快照（不覆盖正文）"
+        },
+        "gongwen.logLevel": {
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug"],
+          "default": "info",
+          "description": "调试日志级别（Output「公文 MD」+ extension/logs/*.log）"
+        }
+      }
+    }
+  },
+  "scripts": {}
+}

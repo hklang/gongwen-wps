@@ -1,0 +1,50 @@
+/* VS Code Webview：工具栏可见 + 右侧文字更清晰 */
+#editor .vditor-toolbar {
+  overflow: visible !important;
+  flex-wrap: wrap !important;
+}
+#editor .vditor-toolbar button,
+#editor .vditor-toolbar .vditor-tooltipped,
+#editor .vditor-toolbar__item {
+  min-width: 28px !important;
+  min-height: 28px !important;
+  flex: 0 0 auto !important;
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+#editor .vditor-toolbar svg {
+  width: 15px !important;
+  height: 15px !important;
+  display: inline-block !important;
+  overflow: visible !important;
+  color: #44403c;
+}
+#editor .vditor-toolbar svg use {
+  fill: currentColor;
+}
+
+/* Webview 缩放/灰阶下，侧栏易发虚：加大字号、加深颜色、抗锯齿 */
+#aiAside {
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+  text-rendering: optimizeLegibility !important;
+}
+#aiAside .ai-bubble,
+#aiAside .ai-body,
+#aiAside .ai-empty,
+#aiAside .ai-req {
+  font-size: 14.5px !important;
+  line-height: 1.75 !important;
+  color: #0a0a0a !important;
+}
+#aiAside .ai-bubble.assistant {
+  border-color: #c4c4c4 !important;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
+}
+#aiAside .ai-note,
+#aiAside .ai-tip,
+#aiAside .ai-sel {
+  font-size: 13px !important;
+  color: #292524 !important;
+  line-height: 1.55 !important;
+}

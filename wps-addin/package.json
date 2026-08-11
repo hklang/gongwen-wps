@@ -1,0 +1,6 @@
+{
+  "name": "gongwen-wps-addin",
+  "addonType": "wps",
+  "description": "公文助手 WPS 加载项（gongwen-wps）",
+  "private": true
+}

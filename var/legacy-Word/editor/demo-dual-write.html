@@ -1,0 +1,2178 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>人机双写 · md 片段演示</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap');
+    :root {
+      --ink: #1c1917;
+      --muted: #78716c;
+      --line: #e7e5e4;
+      --paper: #fafaf9;
+      --panel: #ffffff;
+      --accent: #0f3d56;
+      --accent-soft: #e8f1f6;
+      --ok: #166534;
+      --preview: #fef9c3;
+      --preview-ring: #ca8a04;
+      --shadow: 0 1px 2px rgba(28,25,23,.04), 0 8px 24px rgba(28,25,23,.06);
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 600px at 20% -10%, #e7e5e4 0%, transparent 55%),
+        #d6d3d1;
+      display: flex;
+      flex-direction: column;
+    }
+    .layout {
+      flex: 1; min-height: 0; display: grid;
+      grid-template-columns: 1fr minmax(320px, 380px);
+    }
+    .doc-wrap { overflow: auto; padding: 28px 20px 48px; }
+    .lock-banner {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 8px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      background: rgba(15, 61, 86, .92);
+      color: #f8fafc;
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.4;
+    }
+    .lock-banner.show { display: flex; }
+    .lock-banner::before {
+      content: "";
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #7dd3fc;
+      animation: lock-pulse 1.2s ease-out infinite;
+      flex-shrink: 0;
+    }
+    @keyframes lock-pulse {
+      0% { box-shadow: 0 0 0 0 rgba(125, 211, 252, .55); }
+      70% { box-shadow: 0 0 0 8px rgba(125, 211, 252, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0); }
+    }
+    .doc {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: 52px 58px 68px;
+      min-height: 85vh;
+      font-family: "仿宋", "FangSong", "STFangsong", serif;
+      font-size: 16.5px;
+      line-height: 1.95;
+      user-select: text;
+      -webkit-user-select: text;
+    }
+    /* 与 gongwen.css 一致：段间不留空行，只靠首行缩进与行高 */
+    .doc h1 {
+      text-align: center; font-family: "宋体", SimSun, serif;
+      font-size: 22px; font-weight: 700; margin: 0; letter-spacing: .06em;
+    }
+    .doc .sign, .doc [data-align="right"] {
+      text-align: right; margin: 0;
+      font-family: "仿宋", FangSong, serif;
+    }
+    .doc h2 {
+      font-family: "黑体", SimHei, sans-serif; font-size: 18px;
+      font-weight: 700; margin: 0; text-indent: 2em;
+    }
+    .doc h3 {
+      font-family: "楷体", KaiTi, serif; font-size: 17px;
+      font-weight: 700; margin: 0; text-indent: 2em;
+    }
+    .doc h4, .doc h5, .doc h6 {
+      font-family: "仿宋", FangSong, serif; font-size: 16.5px;
+      font-weight: 700; margin: 0; text-indent: 2em;
+    }
+    .doc p { margin: 0; text-indent: 2em; }
+    .doc u { text-decoration: underline; text-underline-offset: 2px; }
+    .doc strong { font-weight: 700; }
+    .doc span[style*="color:red"] { color: #c62828 !important; }
+    .doc span[style*="background:#000"],
+    .doc span[style*="background:#000000"] {
+      background: #000 !important; color: #fff !important; padding: 0 2px;
+    }
+    .doc .gw-block {
+      cursor: text; border-radius: 4px; transition: background .15s, box-shadow .15s;
+    }
+    .doc h1.gw-block, .doc h2.gw-block, .doc h3.gw-block,
+    .doc h4.gw-block, .doc h5.gw-block, .doc h6.gw-block { cursor: pointer; }
+    .doc .gw-block:hover { background: #f5f5f4; }
+    .doc .gw-block.selected {
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1.5px #7ba3b8;
+    }
+    .doc .gw-block.previewing {
+      background: var(--preview);
+      box-shadow: inset 0 0 0 1.5px var(--preview-ring);
+    }
+    .doc .gw-slice-mark {
+      background: #fde68a;
+      border-radius: 2px;
+      box-shadow: inset 0 0 0 1px #d97706;
+    }
+    .doc strong.gw-enum {
+      cursor: pointer;
+      font-weight: 700;
+      border-radius: 2px;
+      box-decoration-break: clone;
+      -webkit-box-decoration-break: clone;
+    }
+    .doc strong.gw-enum:hover { background: #f5f5f4; }
+    .doc strong.gw-enum.selected {
+      background: var(--accent-soft);
+      box-shadow: inset 0 0 0 1.5px #7ba3b8;
+    }
+    .doc strong.gw-enum.previewing {
+      background: var(--preview);
+      box-shadow: inset 0 0 0 1.5px var(--preview-ring);
+    }
+    aside {
+      background: var(--paper);
+      border-left: 1px solid var(--line);
+      display: flex; flex-direction: column; min-height: 0;
+      box-shadow: -12px 0 32px rgba(28,25,23,.04);
+    }
+    .aside-tabs {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 4px; padding: 12px 12px 0;
+      flex-shrink: 0;
+    }
+    .aside-tabs button {
+      border: 0; border-radius: 8px; cursor: pointer; font: inherit;
+      font-size: 13px; font-weight: 600; padding: 10px 8px;
+      background: transparent; color: var(--muted);
+    }
+    .aside-tabs button.on {
+      background: var(--panel); color: var(--accent);
+      box-shadow: 0 1px 2px rgba(28,25,23,.06), 0 0 0 1px var(--line);
+    }
+    .aside-compose {
+      margin-top: auto;
+      padding: 10px 12px 14px;
+      flex-shrink: 0;
+      background: linear-gradient(180deg, transparent 0%, var(--paper) 18%);
+    }
+    .chat-box {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(28,25,23,.04), 0 8px 20px rgba(28,25,23,.05);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .chat-box:focus-within {
+      border-color: #94b8cb;
+      box-shadow: 0 0 0 3px rgba(15,61,86,.08), 0 8px 20px rgba(28,25,23,.06);
+    }
+    .sel-row {
+      display: flex; align-items: stretch; gap: 6px;
+      margin: 10px 10px 0;
+    }
+    .sel-chip {
+      margin: 0;
+      min-height: 0; padding: 7px 9px; border-radius: 8px;
+      background: #f5f5f4; border: 1px solid transparent;
+      font-size: 12px; line-height: 1.45; color: var(--muted);
+      max-height: 3.6em; overflow: hidden;
+      font-family: "仿宋", FangSong, serif; white-space: pre-wrap;
+      display: flex; align-items: flex-start; gap: 8px;
+      text-align: left; flex: 1; min-width: 0; box-sizing: border-box;
+      font: inherit;
+    }
+    .sel-copy-btn {
+      display: none;
+      flex-shrink: 0;
+      border: 1px solid #c5d8e4;
+      border-radius: 8px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font: inherit; font-size: 12px; font-weight: 650;
+      padding: 0 10px; cursor: pointer;
+    }
+    .sel-copy-btn.show { display: inline-flex; align-items: center; }
+    .sel-copy-btn:hover { border-color: #94b8cb; }
+    .sel-copy-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .sel-reselect-btn {
+      display: none;
+      flex-shrink: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f5f5f4;
+      color: #57534e;
+      font: inherit; font-size: 12px; font-weight: 650;
+      padding: 0 10px; cursor: pointer;
+    }
+    .sel-reselect-btn.show { display: inline-flex; align-items: center; }
+    .sel-reselect-btn:hover { background: #e7e5e4; }
+    .sel-reselect-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .sel-chip .sel-chip-text {
+      flex: 1; min-width: 0;
+      display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+      overflow: hidden; white-space: pre-wrap;
+      font-family: "仿宋", FangSong, serif; font-size: 12px; line-height: 1.45;
+    }
+    .sel-chip .sel-chip-action {
+      flex-shrink: 0; font-size: 11px; font-weight: 600;
+      color: #78716c; margin-top: 1px; white-space: nowrap;
+    }
+    .sel-chip.has {
+      background: var(--accent-soft); border-color: #c5d8e4; color: #1c3d4f;
+      cursor: pointer;
+    }
+    .sel-chip.has:hover { border-color: #94b8cb; }
+    .sel-chip.has.open {
+      border-color: #7ba3b8;
+      border-bottom-left-radius: 0;
+      border-bottom-right-radius: 0;
+      margin-bottom: 0;
+    }
+    .sel-chip.has .sel-chip-action { color: var(--accent); }
+    .sel-chip.has.previewing-back {
+      border-color: #f59e0b;
+      background: #fffbeb;
+    }
+    .sel-chip.has.previewing-back:hover { border-color: #d97706; }
+    .sel-chip:disabled, .sel-chip:not(.has) { cursor: default; }
+    .sel-full {
+      display: none;
+      margin: 0 10px;
+      border: 1px solid #c5d8e4;
+      border-top: 0;
+      border-radius: 0 0 10px 10px;
+      background: #fff;
+      max-height: 180px;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .sel-row.has-open .sel-chip.open {
+      border-bottom-left-radius: 0;
+    }
+    .sel-row.has-open .sel-copy-btn {
+      border-bottom-right-radius: 0;
+    }
+    .sel-full.show { display: flex; }
+    .sel-full-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 10px 4px;
+      font-size: 11px; font-weight: 600; color: var(--muted);
+      flex-shrink: 0;
+    }
+    .sel-full-bar .bar-actions { display: flex; gap: 10px; align-items: center; }
+    .sel-full-bar button {
+      border: 0; background: transparent; cursor: pointer;
+      font: inherit; font-size: 11px; font-weight: 650;
+      color: var(--accent); padding: 2px 4px;
+    }
+    .sel-full-body {
+      overflow: auto; padding: 4px 10px 10px;
+      font-family: "仿宋", FangSong, serif;
+      font-size: 13.5px; line-height: 1.75; color: var(--ink);
+    }
+    .sel-full-body .gw-md-preview { margin: 0; text-indent: 0; }
+    .sel-full-body h1, .sel-full-body h2, .sel-full-body h3,
+    .sel-full-body h4, .sel-full-body h5, .sel-full-body h6 {
+      font-size: 13.5px; margin: 0 0 6px; text-indent: 0;
+    }
+    .sel-full-body p { margin: 0 0 6px; text-indent: 0; }
+    .sel-full-item {
+      display: grid; grid-template-columns: 22px 1fr; gap: 6px;
+      padding: 6px 0; border-top: 1px dashed var(--line);
+    }
+    .sel-full-item:first-child { border-top: 0; padding-top: 2px; }
+    .sel-full-item .n {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      margin-top: 2px;
+    }
+    .req {
+      width: 100%; min-height: 72px; max-height: 160px; resize: none;
+      border: 0; border-radius: 0;
+      padding: 10px 12px 6px; font: inherit; font-size: 13.5px; line-height: 1.55;
+      background: transparent; color: var(--ink);
+    }
+    .req:focus { outline: none; }
+    .req:disabled { color: #a8a29e; }
+    .chat-toolbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px 8px 10px;
+    }
+    .count-select {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 0;
+      border-radius: 999px;
+      background: #f5f5f4 url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%2378716c' d='M1 1l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 9px center;
+      padding: 6px 26px 6px 11px;
+      font: inherit; font-size: 12px; font-weight: 600;
+      color: #44403c; cursor: pointer;
+    }
+    .count-select:disabled { opacity: .45; cursor: not-allowed; }
+    .count-select:focus { outline: none; box-shadow: inset 0 0 0 1px #c5d8e4; }
+    .chat-toolbar .spacer { flex: 1; }
+    .btn-send {
+      border: 0; border-radius: 999px; cursor: pointer; font: inherit;
+      font-size: 12.5px; font-weight: 650; padding: 7px 14px;
+      background: var(--accent); color: #fff; white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-send:disabled { background: #e7e5e4; color: #a8a29e; cursor: not-allowed; }
+    .btn-send .arrow { font-size: 14px; line-height: 1; }
+    .btn-clear-chat {
+      display: none;
+      border: 0; border-radius: 999px; cursor: pointer; font: inherit;
+      font-size: 12px; font-weight: 600; padding: 7px 12px;
+      background: #f5f5f4; color: #57534e; white-space: nowrap;
+    }
+    .btn-clear-chat.show { display: inline-flex; }
+    .btn-clear-chat:hover { background: #e7e5e4; }
+    .btn-clear-chat:disabled { opacity: .45; cursor: not-allowed; }
+    .compose-tip {
+      margin-top: 8px;
+      font-size: 11px; color: var(--muted); line-height: 1.4;
+      padding: 0 4px;
+    }
+    .opts {
+      flex: 1; overflow: auto; padding: 12px 14px 8px;
+      display: flex; flex-direction: column; gap: 10px;
+      min-height: 0;
+    }
+    .opts .empty {
+      margin: 20px 4px; padding: 24px 14px; text-align: center;
+      border-radius: 12px; background: #f5f5f4; color: var(--muted);
+      font-size: 12.5px; line-height: 1.7;
+    }
+    .opts .empty b { display: block; margin-bottom: 6px; font-size: 13.5px; color: #44403c; }
+    .chat-log {
+      display: flex; flex-direction: column; gap: 10px;
+      padding-bottom: 4px;
+    }
+    .chat-bubble {
+      max-width: 92%;
+      padding: 9px 11px;
+      border-radius: 12px;
+      font-size: 13px; line-height: 1.65;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .chat-bubble.user {
+      align-self: flex-end;
+      background: var(--accent);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .chat-bubble.assistant {
+      align-self: flex-start;
+      background: #fff;
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-bottom-left-radius: 4px;
+    }
+    .opt {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+      padding: 12px 14px; transition: border-color .15s, box-shadow .15s;
+    }
+    .opt:hover { border-color: #c5d8e4; box-shadow: 0 4px 14px rgba(15,61,86,.08); }
+    .opt.chosen {
+      border-color: var(--preview-ring);
+      background: linear-gradient(180deg, #fffbeb 0%, #fff 70%);
+    }
+    .opt.adopted {
+      border-color: #86efac;
+      background: linear-gradient(180deg, #f0fdf4 0%, #fff 70%);
+    }
+    .opt-head {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .opt-head .diff-stat {
+      font-size: 11px; color: var(--muted); font-weight: 600;
+      margin-left: auto;
+    }
+    .opt-view-tabs {
+      display: inline-flex; gap: 2px;
+      background: #f5f5f4; border-radius: 8px; padding: 2px;
+    }
+    .opt-view-tabs button {
+      border: 0; background: transparent; cursor: pointer;
+      font: inherit; font-size: 11px; font-weight: 650;
+      color: var(--muted); padding: 4px 9px; border-radius: 6px;
+    }
+    .opt-view-tabs button.on {
+      background: #fff; color: var(--accent);
+      box-shadow: 0 1px 2px rgba(28,25,23,.08);
+    }
+    .opt .body.diff-body {
+      font-family: "仿宋", FangSong, serif;
+      font-size: 13.5px; line-height: 1.85;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .opt .body .diff-del {
+      text-decoration: line-through;
+      color: #a8a29e;
+      background: #f5f5f4;
+      border-radius: 2px;
+    }
+    .opt .body .diff-ins {
+      text-decoration: none;
+      color: #166534;
+      background: #dcfce7;
+      border-radius: 2px;
+      padding: 0 1px;
+      font-style: normal;
+    }
+    .opt .body .diff-block {
+      display: grid; grid-template-columns: 22px 1fr; gap: 6px;
+      padding: 6px 0; border-top: 1px dashed var(--line);
+    }
+    .opt .body .diff-block:first-child { border-top: 0; padding-top: 0; }
+    .opt .body .diff-block .n {
+      width: 20px; height: 20px; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 11px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .opt .body .diff-same {
+      color: var(--muted); font-size: 12px;
+    }
+    .opt .tag {
+      font-size: 11px; font-weight: 700; color: var(--accent);
+      width: 22px; height: 22px; border-radius: 6px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: var(--accent-soft);
+    }
+    .opt.chosen .tag { background: #fef08a; color: #854d0e; }
+    .opt.adopted .tag { background: #bbf7d0; color: #166534; }
+    .opt .badge { font-size: 11px; font-weight: 600; color: var(--muted); }
+    .opt.adopted .badge { color: var(--ok); }
+    .opt.chosen .badge { color: #854d0e; }
+    .opt .rec {
+      font-size: 11px; font-weight: 700; color: #9a3412;
+      background: #ffedd5; border: 1px solid #fdba74;
+      border-radius: 999px; padding: 1px 8px; line-height: 1.4;
+    }
+    .opt.recommend { border-color: #fdba74; box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.25); }
+    .opt .score {
+      font-size: 11px; font-weight: 700; color: var(--muted);
+      font-variant-numeric: tabular-nums;
+    }
+    .opt .note {
+      font-size: 12px; color: var(--muted); line-height: 1.45;
+      margin: 0 0 6px;
+    }
+    .opt .body {
+      font-size: 13px; line-height: 1.7; white-space: pre-wrap;
+      font-family: "仿宋", FangSong, serif; color: #292524;
+      overflow: visible;
+      cursor: pointer;
+    }
+    .opt .body h1, .opt .body h2, .opt .body h3,
+    .opt .body h4, .opt .body h5, .opt .body h6 { font-size: 13px; margin: 0 0 4px; text-indent: 0; }
+    .opt .body p { margin: 0 0 6px; text-indent: 0; }
+    .opt-actions {
+      margin-top: 10px; display: flex; gap: 8px; align-items: center;
+    }
+    .btn-adopt {
+      border: 0; border-radius: 8px; cursor: pointer; font: inherit;
+      font-size: 12px; font-weight: 600; padding: 7px 12px;
+      background: var(--ok); color: #fff;
+    }
+    .btn-adopt:disabled { background: #bbf7d0; color: #86efac; cursor: default; }
+    .btn-preview {
+      border: 0; border-radius: 8px; cursor: pointer; font: inherit;
+      font-size: 12px; font-weight: 600; padding: 7px 12px;
+      background: var(--panel); color: #44403c;
+      box-shadow: inset 0 0 0 1px var(--line);
+    }
+    .toast {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      background: rgba(28,25,23,.92); color: #fafaf9;
+      padding: 11px 18px; border-radius: 999px; font-size: 13px;
+      opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20;
+    }
+    .toast.show { opacity: 1; }
+    @media (max-width: 960px) {
+      .layout { grid-template-columns: 1fr; }
+      aside { max-height: 52vh; border-left: 0; border-top: 1px solid var(--line); }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <div class="doc-wrap">
+      <article class="doc" id="doc"></article>
+    </div>
+    <aside>
+      <div class="aside-tabs">
+        <button type="button" class="on" id="tabWrite">写作</button>
+        <button type="button" id="tabProof">校对</button>
+      </div>
+      <div class="opts" id="opts"></div>
+      <div class="aside-compose">
+        <div class="lock-banner" id="lockBanner">正在按要求出方案…</div>
+        <div class="chat-box" id="chatBox">
+          <div class="sel-row" id="selRow">
+            <button type="button" class="sel-chip" id="selHint" aria-expanded="false" title="">
+              <span class="sel-chip-text" id="selHintText">拖选文字优先；点标题/加黑「一是」才按同级扩选</span>
+              <span class="sel-chip-action" id="selHintAction" hidden>展开</span>
+            </button>
+            <button type="button" class="sel-copy-btn" id="selCopyBtn" title="复制当前工作选区原文" hidden>复制</button>
+            <button type="button" class="sel-reselect-btn" id="btnReselect" title="结束本轮方案，允许更换选区" hidden>重选</button>
+          </div>
+          <div class="sel-full" id="selFull" hidden>
+            <div class="sel-full-bar">
+              <span id="selFullLabel">选区全文</span>
+              <span class="bar-actions">
+                <button type="button" id="selFullCopy">复制</button>
+                <button type="button" id="selFullClose">收起</button>
+              </span>
+            </div>
+            <div class="sel-full-body" id="selFullBody"></div>
+          </div>
+          <textarea class="req" id="reqInput" placeholder="写要求，例如：更简洁、保留红字与下划线…" rows="3"></textarea>
+          <div class="chat-toolbar">
+            <select class="count-select" id="countSelect" title="出方案套数或对话" aria-label="出方案套数或对话">
+              <option value="chat">对话</option>
+              <option value="1">1 套</option>
+              <option value="2">2 套</option>
+              <option value="3" selected>3 套</option>
+              <option value="4">4 套</option>
+              <option value="5">5 套</option>
+              <option value="6">6 套</option>
+            </select>
+            <span class="spacer"></span>
+            <button type="button" class="btn-clear-chat" id="btnClearChat" title="清空对话">清空</button>
+            <button type="button" class="btn-send" id="btnSend" disabled>出方案 <span class="arrow">↑</span></button>
+          </div>
+        </div>
+        <div class="compose-tip" id="composeTip">Enter 发送 · Shift+Enter 换行</div>
+      </div>
+    </aside>
+  </div>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const SAMPLE_MD = `# 2026年上半年个人工作总结
+
+<div align="right">集团副总经理 王润涛</div>
+
+根据工作分工，分管置业公司、致远公司、新能源公司、产业园公司，以及集团工程项目管理部、安全管理部。半年来，**我紧盯集团中心大局**，突出统筹调度与攻坚突破，较好完成既定目标任务。现将有关情况汇报如下：
+
+## 一、坚持政治引领，强化大局意识
+
+### （一）加强理论学习，不断提高政治站位
+
+<u>始终把学习贯彻习近平新时代中国特色社会主义思想作为首要政治任务</u>，<span style="color:red">及时跟进学习党中央和省委</span>、<span style="background:#000;color:#fff">市委重要会议精神</span>，将正确政绩观落实到履职全过程。同时，严格落实“一岗双责”，以党的建设引领和保障业务工作。
+
+### （二）统筹推进大冬会工作，确保攻坚任务落地
+
+**一是压实责任到人。**场馆建设明确包保责任，倒排工期、挂图作战。**二是坚持现场调度。**统筹推进五环体育馆、市滑冰馆等7个场馆维修升级，坚持“朝七晚七”。**三是冲刺完工节点。**目前正全力冲刺9月30日完工目标。
+
+## 二、坚持目标导向，推动重点工作落地见效
+
+### （一）强化调度督导
+
+紧盯年度目标，定期调度分管企业重点任务进展。
+
+### （二）抓好安全稳定
+
+压实安全责任，督促各单位排查整治隐患。
+`;
+
+    const state = {
+      tab: 'write',
+      md: SAMPLE_MD.replace(/\r\n/g, '\n'),
+      blocks: [],
+      slice: null,
+      options: [],
+      previewId: null,
+      adoptedId: null,
+      optionCount: 3,
+      composeMode: 'suite', // suite | chat
+      chatMessages: [],
+      allowNextSelect: false,
+      genRound: 0,
+      locked: false,
+      genToken: 0,
+      targets: null,
+      selFullOpen: false,
+      optViewMode: 'diff', // diff | new
+    };
+
+    function isChatMode() {
+      return state.composeMode === 'chat';
+    }
+
+    /** 本轮进行中：左侧再选只用于复制，不更换工作选区、不清空方案/对话 */
+    function isWorkingSelectionFrozen() {
+      if (state.allowNextSelect) return false;
+      if (state.locked) return true;
+      if (!isChatMode() && (state.options.length > 0 || state.previewId || state.adoptedId)) {
+        return true;
+      }
+      if (isChatMode() && state.chatMessages.length > 0) return true;
+      return false;
+    }
+
+    function endComposeRound() {
+      state.options = [];
+      state.previewId = null;
+      state.adoptedId = null;
+      state.genRound = 0;
+      state.genToken += 1;
+      state.allowNextSelect = false;
+      renderDoc();
+      renderOpts();
+      updateChrome();
+      toast('本轮已结束，可重新选区');
+    }
+
+    function requestReselect() {
+      if (state.locked) return;
+      if (!isChatMode()) {
+        endComposeRound();
+        return;
+      }
+      // 对话：不清消息，只允许下一次改工作选区
+      state.allowNextSelect = true;
+      updateChrome();
+      toast('请在左侧选择新的上下文（本次只改选区）');
+    }
+
+    function selectionCopyText() {
+      if (!state.slice) return '';
+      refreshTargets();
+      const md = (state.targets && state.targets.length > 1)
+        ? state.targets.map((t) => t.md).join('\n')
+        : state.slice.mdSlice;
+      return String(md || '')
+        .replace(/<\/(p|h[1-6]|div)>/gi, '\n')
+        .replace(/<\/?[^>]+>/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    async function copyWorkingSelection() {
+      const text = selectionCopyText();
+      if (!text) {
+        toast('当前没有工作选区');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(text);
+        toast('已复制工作选区');
+      } catch (err) {
+        toast('复制失败：' + String(err.message || err));
+      }
+    }
+
+    function toast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => el.classList.remove('show'), 1600);
+    }
+
+    function splitMdBlocks(md) {
+      const text = md.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
+      const parts = text.split(/\n{2,}/);
+      const blocks = [];
+      let cursor = 0;
+      parts.forEach((part, i) => {
+        const chunk = part.trim();
+        if (!chunk) return;
+        const start = md.indexOf(chunk, cursor);
+        const end = start + chunk.length;
+        cursor = end;
+        blocks.push({ id: 'b' + i, md: chunk, start, end });
+      });
+      return blocks;
+    }
+
+    function headingLevel(md) {
+      const m = /^(#{1,6})\s+/.exec(String(md || '').trim());
+      return m ? m[1].length : 0;
+    }
+
+    function isHeadingBlock(block) {
+      return !!(block && headingLevel(block.md));
+    }
+
+    /** 加黑小标题：仅 **一是…** / **二要…** 等，普通加粗不算 */
+    function isEnumBoldInner(inner) {
+      return /^[一二三四五六七八九十]+[是要]/.test(String(inner || '').trim());
+    }
+
+    function listEnumTitlesInBlock(blockMd) {
+      const out = [];
+      const re = /\*\*([^*]+)\*\*/g;
+      let m;
+      while ((m = re.exec(String(blockMd || ''))) !== null) {
+        if (!isEnumBoldInner(m[1])) continue;
+        out.push({
+          mdFrom: m.index,
+          mdTo: m.index + m[0].length,
+          md: m[0],
+          inner: m[1],
+        });
+      }
+      return out;
+    }
+
+    function normalizeEnumItemMd(md) {
+      const t = String(md || '').trim();
+      if (!t) return t;
+      if (/^\*\*[\s\S]+\*\*$/.test(t)) return t;
+      return '**' + t.replace(/^\*\*|\*\*$/g, '') + '**';
+    }
+
+    /**
+     * 同级 # 标题（不跨父级）：
+     * - 点一级(##) → 全文所有一级
+     * - 点某一级下的二级(###) → 该一级下全部二级
+     */
+    function findSiblingHeadingBlocks(anchor) {
+      if (!anchor || !isHeadingBlock(anchor)) return [];
+      const level = headingLevel(anchor.md);
+      const blocks = state.blocks;
+      const idx = blocks.findIndex((b) => b.id === anchor.id);
+      if (idx < 0) return [];
+
+      let parentIdx = -1;
+      let parentLevel = 0;
+      for (let i = idx - 1; i >= 0; i--) {
+        const lv = headingLevel(blocks[i].md);
+        if (lv && lv < level) {
+          parentIdx = i;
+          parentLevel = lv;
+          break;
+        }
+      }
+
+      const start = parentIdx >= 0 ? parentIdx + 1 : 0;
+      const out = [];
+      for (let i = start; i < blocks.length; i++) {
+        const lv = headingLevel(blocks[i].md);
+        if (parentLevel && lv && lv <= parentLevel) break;
+        if (!parentLevel && lv && lv < level) break;
+        if (lv === level) out.push(blocks[i]);
+      }
+      return out.length ? out : [anchor];
+    }
+
+    /** 当前二级/一级节内，全部加黑「一是/二是…」小标题 */
+    function findSiblingEnumTargets(blockId, mdFrom) {
+      const blocks = state.blocks;
+      const idx = blocks.findIndex((b) => b.id === blockId);
+      if (idx < 0) return [];
+
+      let parentIdx = -1;
+      let parentLevel = 0;
+      for (let i = idx - 1; i >= 0; i--) {
+        const lv = headingLevel(blocks[i].md);
+        if (lv) {
+          parentIdx = i;
+          parentLevel = lv;
+          break;
+        }
+      }
+
+      const start = parentIdx >= 0 ? parentIdx + 1 : 0;
+      const out = [];
+      for (let i = start; i < blocks.length; i++) {
+        const lv = headingLevel(blocks[i].md);
+        if (parentLevel && lv && lv <= parentLevel) break;
+        if (!parentLevel && lv) break;
+        listEnumTitlesInBlock(blocks[i].md).forEach((e) => {
+          out.push({
+            blockId: blocks[i].id,
+            md: e.md,
+            mdFrom: e.mdFrom,
+            mdTo: e.mdTo,
+            kind: 'enum',
+          });
+        });
+      }
+      if (!out.length) {
+        const block = blocks[idx];
+        const hit = listEnumTitlesInBlock(block.md).find((e) => e.mdFrom === mdFrom);
+        if (hit) {
+          out.push({
+            blockId: block.id,
+            md: hit.md,
+            mdFrom: hit.mdFrom,
+            mdTo: hit.mdTo,
+            kind: 'enum',
+          });
+        }
+      }
+      return out;
+    }
+
+    function isWholeHeadingSlice() {
+      if (!state.slice) return false;
+      if (state.slice.kind === 'enum') return false;
+      const anchor = state.blocks.find((b) => b.id === state.slice.blockId);
+      if (!anchor || !isHeadingBlock(anchor)) return false;
+      if (!state.slice.prefix && !state.slice.suffix) return true;
+      return state.slice.mdSlice.trim() === anchor.md.trim();
+    }
+
+    function isEnumSlice() {
+      // 仅点击加黑小标题时带 kind=enum；拖选正文即使以「一是」开头也不扩选
+      return !!(state.slice && state.slice.kind === 'enum');
+    }
+
+    function refreshTargets() {
+      state.targets = null;
+      if (!state.slice) return;
+      // 鼠标拖选最高优先：只改选中文字，绝不扩选标题/一是
+      if (state.slice.kind === 'slice') {
+        state.targets = [{
+          blockId: state.slice.blockId,
+          md: state.slice.mdSlice,
+          mdFrom: state.slice.mdFrom,
+          mdTo: state.slice.mdTo,
+          kind: 'slice',
+        }];
+        return;
+      }
+      if (isEnumSlice()) {
+        state.targets = findSiblingEnumTargets(state.slice.blockId, state.slice.mdFrom);
+        return;
+      }
+      if (isWholeHeadingSlice()) {
+        const anchor = state.blocks.find((b) => b.id === state.slice.blockId);
+        state.targets = findSiblingHeadingBlocks(anchor).map((b) => ({
+          blockId: b.id,
+          md: b.md,
+          mdFrom: 0,
+          mdTo: b.md.length,
+          kind: 'heading',
+        }));
+        return;
+      }
+      state.targets = [{
+        blockId: state.slice.blockId,
+        md: state.slice.mdSlice,
+        mdFrom: state.slice.mdFrom,
+        mdTo: state.slice.mdTo,
+        kind: 'slice',
+      }];
+    }
+
+    function selectedBlockIds() {
+      if (state.targets && state.targets.length && state.targets[0].kind === 'enum') {
+        return new Set();
+      }
+      if (state.targets && state.targets.length) {
+        return new Set(state.targets.map((t) => t.blockId));
+      }
+      if (state.slice) return new Set([state.slice.blockId]);
+      return new Set();
+    }
+
+    function escapeHtml(s) {
+      return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    }
+
+    function buildPlainMap(md) {
+      const map = [];
+      let i = 0;
+      const h = /^(#{1,6} )/.exec(md);
+      if (h) i = h[1].length;
+      while (i < md.length) {
+        if (md.startsWith('**', i)) { i += 2; continue; }
+        if (md[i] === '<') {
+          const gt = md.indexOf('>', i);
+          if (gt < 0) break;
+          i = gt + 1;
+          continue;
+        }
+        map.push(i);
+        i += 1;
+      }
+      return map;
+    }
+
+    function listHtmlElements(md) {
+      const els = [];
+      const stack = [];
+      const re = /<\/?([a-zA-Z]+)(\s[^>]*)?>/g;
+      let m;
+      while ((m = re.exec(md))) {
+        const name = m[1].toLowerCase();
+        if (!/^(u|strong|b|span)$/.test(name)) continue;
+        if (m[0].startsWith('</')) {
+          for (let i = stack.length - 1; i >= 0; i--) {
+            if (stack[i].name === name) {
+              const open = stack.splice(i, 1)[0];
+              els.push({ start: open.start, end: m.index + m[0].length });
+              break;
+            }
+          }
+        } else {
+          stack.push({ name, start: m.index });
+        }
+      }
+      return els;
+    }
+
+    function listBoldPairs(md) {
+      const pairs = [];
+      let i = 0;
+      while (i < md.length) {
+        if (md[i] === '<') {
+          const gt = md.indexOf('>', i);
+          i = gt < 0 ? md.length : gt + 1;
+          continue;
+        }
+        if (md.startsWith('**', i)) {
+          const j = md.indexOf('**', i + 2);
+          if (j < 0) break;
+          pairs.push({ start: i, end: j + 2 });
+          i = j + 2;
+          continue;
+        }
+        i += 1;
+      }
+      return pairs;
+    }
+
+    function completeMdSlice(md, mdFrom, mdTo) {
+      let from = mdFrom;
+      let to = mdTo;
+      let changed = true;
+      // 选区碰到格式就整段吞进：保证交给模型的片段自带完整 <u>/**/红字/黑底
+      while (changed) {
+        changed = false;
+        for (const el of listHtmlElements(md).concat(listBoldPairs(md))) {
+          if (to <= el.start || from >= el.end) continue;
+          if (from > el.start) { from = el.start; changed = true; }
+          if (to < el.end) { to = el.end; changed = true; }
+        }
+      }
+      return {
+        mdFrom: from,
+        mdTo: to,
+        mdSlice: md.slice(from, to),
+        prefix: md.slice(0, from),
+        suffix: md.slice(to),
+      };
+    }
+
+    function mdToPlainHint(md) {
+      return String(md || '')
+        .replace(/<\/?[^>]+>/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function formatInventoryHint(md) {
+      const s = String(md || '');
+      const tags = [];
+      if (/\*\*/.test(s)) tags.push('加粗');
+      if (/<u\b/i.test(s)) tags.push('下划线');
+      if (/color\s*:\s*red/i.test(s)) tags.push('红字');
+      if (/background\s*:\s*#000/i.test(s)) tags.push('黑底');
+      return tags.length ? ('带格式：' + tags.join('、')) : '';
+    }
+
+    /** 邻接上下文：尽量不从标签中间切开 */
+    function clipContext(md, side, maxLen) {
+      const s = String(md || '');
+      if (!s) return '';
+      let chunk = side === 'before' ? s.slice(-maxLen) : s.slice(0, maxLen);
+      if (side === 'before') {
+        const lt = chunk.indexOf('<');
+        const gt = chunk.indexOf('>');
+        if (lt >= 0 && (gt < 0 || gt < lt)) chunk = chunk.slice(lt);
+      } else {
+        const lt = chunk.lastIndexOf('<');
+        const gt = chunk.lastIndexOf('>');
+        if (lt > gt) chunk = chunk.slice(0, lt);
+      }
+      return chunk;
+    }
+
+    function plainRangeToMdSlice(blockMd, plainStart, plainEnd) {
+      const map = buildPlainMap(blockMd);
+      if (!map.length) {
+        return { mdFrom: 0, mdTo: blockMd.length, mdSlice: blockMd, prefix: '', suffix: '' };
+      }
+      const ps = Math.max(0, Math.min(plainStart, map.length));
+      const pe = Math.max(ps, Math.min(plainEnd, map.length));
+      if (ps >= pe) return null;
+      return completeMdSlice(blockMd, map[ps], map[pe - 1] + 1);
+    }
+
+    function wholeBlockSlice(block) {
+      return {
+        blockId: block.id,
+        mdFrom: 0,
+        mdTo: block.md.length,
+        mdSlice: block.md,
+        prefix: '',
+        suffix: '',
+      };
+    }
+
+    function renderInline(s) {
+      const bag = [];
+      let t = String(s || '');
+      t = t.replace(/<(u|strong|b|span\b[^>]*)>([\s\S]*?)<\/(?:u|strong|b|span)>/gi, (m) => {
+        const i = bag.length;
+        bag.push(m);
+        return '\uE000' + i + '\uE001';
+      });
+      t = t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      t = t.replace(/\uE000(\d+)\uE001/g, (_, i) => bag[Number(i)]);
+      return t;
+    }
+
+    function previewItemForTarget(t) {
+      if (!t || !state.previewId || !state.targets) return t ? t.md : '';
+      const opt = state.options.find((o) => o.id === state.previewId);
+      if (!opt) return t.md;
+      if (Array.isArray(opt.items)) {
+        const idx = state.targets.findIndex(
+          (x) => x.blockId === t.blockId && x.mdFrom === t.mdFrom
+        );
+        if (idx >= 0 && opt.items[idx] != null) return normalizeEnumItemMd(opt.items[idx]);
+      }
+      if (state.slice && t.blockId === state.slice.blockId && t.mdFrom === state.slice.mdFrom) {
+        return state.slice.kind === 'enum' ? normalizeEnumItemMd(opt.md) : opt.md;
+      }
+      return t.md;
+    }
+
+    function renderParaWithEnums(raw, blockId, attr) {
+      const src = String(raw || '');
+      let html = '';
+      let i = 0;
+      const re = /\*\*([^*]+)\*\*/g;
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        if (m.index > i) html += renderInline(src.slice(i, m.index));
+        const inner = m[1];
+        if (blockId && isEnumBoldInner(inner)) {
+          const from = m.index;
+          const to = m.index + m[0].length;
+          const tgt = (state.targets || []).find(
+            (t) => t.kind === 'enum' && t.blockId === blockId && t.mdFrom === from
+          );
+          let cls = 'gw-enum';
+          if (tgt) cls += state.previewId ? ' previewing' : ' selected';
+          let show = inner;
+          if (tgt) {
+            const item = previewItemForTarget(tgt);
+            show = String(item).replace(/^\*\*|\*\*$/g, '');
+          }
+          // 不用 data-block，避免拖选时 closest 命中 strong 而非段落
+          html += '<strong class="' + cls + '" data-enum-title="1" data-enum-block="' +
+            blockId + '" data-from="' + from + '" data-to="' + to + '">' +
+            escapeHtml(show) + '</strong>';
+        } else {
+          html += '<strong>' + escapeHtml(inner) + '</strong>';
+        }
+        i = m.index + m[0].length;
+      }
+      if (i < src.length) html += renderInline(src.slice(i));
+      return '<p' + attr + '>' + html + '</p>';
+    }
+
+    function mdBlockToHtml(blockMd, blockId, modeClass, slicePreviewMd) {
+      let bodyMd = String(blockMd || '').trim();
+      let markSlice = false;
+      if (slicePreviewMd != null && state.slice && state.slice.blockId === blockId &&
+          state.slice.kind !== 'enum') {
+        bodyMd = state.slice.prefix + slicePreviewMd + state.slice.suffix;
+        markSlice = true;
+      }
+      const cls = 'gw-block' + (modeClass ? ' ' + modeClass : '');
+      const attr = blockId
+        ? ' class="' + cls + '" data-block="' + blockId + '"'
+        : ' class="gw-md-preview"';
+      const raw = bodyMd.trim();
+      const hm = /^(#{1,6})\s+([\s\S]*)$/.exec(raw);
+      if (hm) {
+        const tag = 'h' + hm[1].length;
+        return '<' + tag + attr + '>' + renderInline(hm[2]) + '</' + tag + '>';
+      }
+      if (/^<div\s+align=["']right["']>/i.test(raw)) {
+        const inner = raw.replace(/^<div\s+align=["']right["']>/i, '').replace(/<\/div>\s*$/i, '');
+        return '<div data-align="right"' + attr + '>' + renderInline(inner) + '</div>';
+      }
+      // 鼠标拖选优先展示选区，不被「一是」段落的特殊渲染抢走
+      if (markSlice && state.slice && state.slice.kind === 'slice') {
+        const mid = slicePreviewMd != null ? slicePreviewMd : state.slice.mdSlice;
+        return '<p' + attr + '>' +
+          renderInline(state.slice.prefix) +
+          '<span class="gw-slice-mark">' + renderInline(mid) + '</span>' +
+          renderInline(state.slice.suffix) +
+          '</p>';
+      }
+      if (blockId && listEnumTitlesInBlock(raw).length) {
+        return renderParaWithEnums(raw, blockId, attr);
+      }
+      if (markSlice && state.slice && (state.slice.prefix || state.slice.suffix)) {
+        const mid = slicePreviewMd != null ? slicePreviewMd : state.slice.mdSlice;
+        return '<p' + attr + '>' +
+          renderInline(state.slice.prefix) +
+          '<span class="gw-slice-mark">' + renderInline(mid) + '</span>' +
+          renderInline(state.slice.suffix) +
+          '</p>';
+      }
+      return '<p' + attr + '>' + renderInline(raw) + '</p>';
+    }
+
+    function currentSliceDisplayMd() {
+      if (!state.slice) return '';
+      if (state.previewId) {
+        const opt = state.options.find((o) => o.id === state.previewId);
+        if (opt) return opt.md;
+      }
+      return state.slice.mdSlice;
+    }
+
+    function previewMdForBlock(blockId, fallbackMd) {
+      if (!state.previewId) return fallbackMd;
+      const opt = state.options.find((o) => o.id === state.previewId);
+      if (!opt) return fallbackMd;
+      if (state.targets && state.targets.length && state.targets[0].kind === 'heading' &&
+          Array.isArray(opt.items)) {
+        const idx = state.targets.findIndex((t) => t.blockId === blockId);
+        if (idx >= 0 && opt.items[idx]) return opt.items[idx];
+      }
+      if (state.slice && state.slice.blockId === blockId && state.slice.kind !== 'enum') {
+        return opt.md;
+      }
+      return fallbackMd;
+    }
+
+    function renderDoc() {
+      state.blocks = splitMdBlocks(state.md);
+      refreshTargets();
+      const selIds = selectedBlockIds();
+      const headingMulti = state.targets && state.targets.length > 1 &&
+        state.targets[0].kind === 'heading';
+      const html = state.blocks.map((b) => {
+        const isSel = selIds.has(b.id) ||
+          (state.slice && state.slice.kind === 'slice' && state.slice.blockId === b.id);
+        const mode = isSel ? (state.previewId ? 'previewing' : 'selected') : '';
+        if (headingMulti && isSel) {
+          return mdBlockToHtml(previewMdForBlock(b.id, b.md), b.id, mode, null);
+        }
+        const useSliceView = state.slice && state.slice.kind === 'slice' &&
+          state.slice.blockId === b.id;
+        if (useSliceView) {
+          return mdBlockToHtml(b.md, b.id, mode, currentSliceDisplayMd());
+        }
+        if (isSel && state.previewId) {
+          return mdBlockToHtml(previewMdForBlock(b.id, b.md), b.id, mode, null);
+        }
+        if (isSel && state.slice && state.slice.blockId === b.id &&
+            !state.slice.prefix && !state.slice.suffix) {
+          return mdBlockToHtml(state.slice.mdSlice, b.id, mode, null);
+        }
+        return mdBlockToHtml(b.md, b.id, mode, null);
+      }).join('');
+      document.getElementById('doc').innerHTML = html;
+    }
+
+    function selectionSummaryText() {
+      if (!state.slice) return '';
+      refreshTargets();
+      if (state.slice.kind === 'slice') {
+        const plain = mdToPlainHint(state.slice.mdSlice);
+        const fmt = formatInventoryHint(state.slice.mdSlice);
+        return '拖选 ×1：' + (plain.length > 70 ? plain.slice(0, 70) + '…' : plain) +
+          (fmt ? ' · ' + fmt : '');
+      }
+      if (state.targets && state.targets.length > 1) {
+        const label = state.targets[0].kind === 'enum' ? '加黑小标题' : '同级标题';
+        return label + ' ×' + state.targets.length + '：' +
+          state.targets.map((t) => mdToPlainHint(t.md)).join('； ');
+      }
+      const plain = mdToPlainHint(state.slice.mdSlice);
+      return plain.length > 90 ? plain.slice(0, 90) + '…' : plain;
+    }
+
+    function renderSelFull() {
+      const panel = document.getElementById('selFull');
+      const body = document.getElementById('selFullBody');
+      const label = document.getElementById('selFullLabel');
+      const hint = document.getElementById('selHint');
+      const action = document.getElementById('selHintAction');
+      if (!state.slice || !state.selFullOpen) {
+        panel.classList.remove('show');
+        panel.hidden = true;
+        hint.classList.remove('open');
+        hint.setAttribute('aria-expanded', 'false');
+        if (action) {
+          action.hidden = !state.slice;
+          action.textContent = '展开';
+        }
+        return;
+      }
+      refreshTargets();
+      const multi = state.targets && state.targets.length > 1 &&
+        (state.targets[0].kind === 'heading' || state.targets[0].kind === 'enum');
+      if (multi) {
+        const kind = state.targets[0].kind === 'enum' ? '加黑小标题' : '同级标题';
+        label.textContent = '选区全文 · ' + kind + ' ' + state.targets.length + ' 条';
+        body.innerHTML = state.targets.map((t, i) =>
+          '<div class="sel-full-item"><div class="n">' + (i + 1) + '</div><div>' +
+          mdBlockToHtml(t.md, null, '', null) + '</div></div>'
+        ).join('');
+      } else {
+        const fmt = formatInventoryHint(state.slice.mdSlice);
+        label.textContent = fmt ? ('选区全文 · ' + fmt.replace(/^带格式：/, '')) : '选区全文';
+        body.innerHTML = mdBlockToHtml(state.slice.mdSlice, null, '', null);
+      }
+      panel.hidden = false;
+      panel.classList.add('show');
+      hint.classList.add('open');
+      hint.setAttribute('aria-expanded', 'true');
+      if (action) {
+        action.hidden = false;
+        action.textContent = '收起';
+      }
+    }
+
+    function setSelFullOpen(on) {
+      state.selFullOpen = !!(on && state.slice);
+      renderSelFull();
+    }
+
+    function updateChrome() {
+      const hint = document.getElementById('selHint');
+      const hintText = document.getElementById('selHintText');
+      const action = document.getElementById('selHintAction');
+      const send = document.getElementById('btnSend');
+      const tip = document.getElementById('composeTip');
+      const req = document.getElementById('reqInput');
+      const countSelect = document.getElementById('countSelect');
+      const clearChat = document.getElementById('btnClearChat');
+      const chat = isChatMode();
+
+      countSelect.value = chat ? 'chat' : String(state.optionCount);
+      countSelect.disabled = state.locked;
+      countSelect.title = chat ? '当前：普通对话' : '当前：出方案套数';
+      clearChat.classList.toggle('show', chat);
+      clearChat.disabled = state.locked || !state.chatMessages.length;
+
+      const frozen = isWorkingSelectionFrozen();
+      const copyBtn = document.getElementById('selCopyBtn');
+      const reselectBtn = document.getElementById('btnReselect');
+      copyBtn.classList.toggle('show', !!state.slice);
+      copyBtn.hidden = !state.slice;
+      copyBtn.disabled = !state.slice;
+      reselectBtn.classList.toggle('show', frozen || state.allowNextSelect);
+      reselectBtn.hidden = !(frozen || state.allowNextSelect);
+      reselectBtn.disabled = state.locked;
+      reselectBtn.textContent = state.allowNextSelect ? '选区中…' : '重选';
+      reselectBtn.title = chat
+        ? '允许更换对话上下文（不清空聊天）'
+        : '结束本轮方案，允许更换选区';
+
+      if (!state.slice) {
+        state.selFullOpen = false;
+        hint.className = 'sel-chip';
+        hintText.textContent = chat
+          ? '对话可不选正文；选中后会作为上下文'
+          : '拖选文字优先；点标题/加黑「一是」才按同级扩选';
+        action.hidden = true;
+        hint.title = '';
+        hint.disabled = true;
+        renderSelFull();
+      } else {
+        hint.disabled = false;
+        const previewing = !chat && !!state.previewId;
+        hint.className = 'sel-chip has' +
+          (state.selFullOpen ? ' open' : '') +
+          (previewing ? ' previewing-back' : '');
+        hintText.textContent = (previewing ? '点此还原原文 · ' : (frozen && !chat ? '本轮选区：' : '')) +
+          selectionSummaryText();
+        action.hidden = false;
+        action.textContent = state.selFullOpen ? '收起' : '展开';
+        hint.title = previewing
+          ? '点击还原左侧原文预览（再点可展开/收起全文）'
+          : (state.selFullOpen ? '点击收起全文' : '点击查看选区全文（含格式）');
+        renderSelFull();
+      }
+
+      if (chat) {
+        req.disabled = state.locked;
+        req.placeholder = '问点什么，例如：这段语气是否合适？';
+        send.disabled = state.locked;
+        send.innerHTML = '发送 <span class="arrow">↑</span>';
+        if (frozen || state.allowNextSelect) {
+          tip.textContent = state.allowNextSelect
+            ? '请在左侧选择新的上下文'
+            : '对话进行中：左侧再选只用于复制；换上下文请点「重选」';
+        } else {
+          tip.textContent = state.slice
+            ? 'Enter 发送问答（带选区上下文）· 不直接改正文'
+            : 'Enter 发送问答 · 也可先选中正文再问';
+        }
+        return;
+      }
+
+      req.placeholder = '写要求，例如：更简洁、保留红字与下划线…';
+      if (!state.slice) {
+        send.disabled = true;
+        send.innerHTML = '出方案 <span class="arrow">↑</span>';
+        req.disabled = true;
+        tip.textContent = '选中后写要求，Enter 出方案（Shift+Enter 换行）';
+        return;
+      }
+
+      req.disabled = state.locked;
+      send.disabled = state.locked;
+      send.innerHTML = (state.options.length ? '再出' : '出方案') + ' <span class="arrow">↑</span>';
+      if (state.previewId) {
+        tip.textContent = '左侧为方案预览 · 点下方选区可还原原文';
+      } else if (frozen || state.allowNextSelect) {
+        tip.textContent = state.allowNextSelect
+          ? '请在左侧点选新的工作选区'
+          : '本轮进行中：左侧再选只用于复制，不更换选区；要换选区请点「重选」';
+      } else if (state.adoptedId) {
+        tip.textContent = '已采用方案 ' + state.adoptedId + ' · 可替换其它方案，或改要求再出';
+      } else if (state.options.length) {
+        tip.textContent = '预览 → 采用；点下方选区可回到原文；不满意改要求后再出';
+      } else if (state.slice.kind === 'slice') {
+        tip.textContent = formatInventoryHint(state.slice.mdSlice)
+          ? '出方案将按原文格式改写（下划线/红字等会保留）'
+          : '按拖选文字出方案，不扩选标题 · 点选区可看全文';
+      } else if (state.targets && state.targets.length > 1 && state.targets[0].kind === 'enum') {
+        tip.textContent = '将改本节全部加黑「一是/二是…」小标题，普通加粗与正文不动';
+      } else if (state.targets && state.targets.length > 1) {
+        tip.textContent = '将改当前范围内全部同级标题，不含上下级与正文';
+      } else {
+        tip.textContent = '写好要求后发送 · 点选区摘要可看全文';
+      }
+    }
+
+    function renderChat() {
+      const box = document.getElementById('opts');
+      if (!state.chatMessages.length) {
+        box.innerHTML = '<div class="empty"><b>对话</b>直接提问，或先选中正文再问<br>不会自动改稿</div>';
+        return;
+      }
+      box.innerHTML = '<div class="chat-log">' + state.chatMessages.map((m) =>
+        '<div class="chat-bubble ' + m.role + '">' + escapeHtml(m.content) + '</div>'
+      ).join('') + '</div>';
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function mdToPlainForDiff(md) {
+      return String(md || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/<(br|\/p|\/h[1-6]|\/div)\s*\/?>/gi, '\n')
+        .replace(/<\/?[^>]+>/g, '')
+        .replace(/\*\*/g, '')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    }
+
+    function mergeDiffParts(parts) {
+      const out = [];
+      parts.forEach((p) => {
+        const last = out[out.length - 1];
+        if (last && last.t === p.t) last.s += p.s;
+        else out.push({ t: p.t, s: p.s });
+      });
+      return out;
+    }
+
+    /** 字级对照：删=删除线，增=高亮 */
+    function diffPlain(oldStr, newStr) {
+      const a = Array.from(String(oldStr || ''));
+      const b = Array.from(String(newStr || ''));
+      const n = a.length;
+      const m = b.length;
+      if (!n && !m) return { parts: [], del: 0, ins: 0 };
+      if (n * m > 400000) {
+        // 过长时退化为整段替换，避免卡顿
+        return {
+          parts: [
+            ...(n ? [{ t: 'del', s: oldStr }] : []),
+            ...(m ? [{ t: 'ins', s: newStr }] : []),
+          ],
+          del: n,
+          ins: m,
+        };
+      }
+      const dp = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+      for (let i = n - 1; i >= 0; i--) {
+        for (let j = m - 1; j >= 0; j--) {
+          dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+        }
+      }
+      const raw = [];
+      let i = 0;
+      let j = 0;
+      while (i < n && j < m) {
+        if (a[i] === b[j]) {
+          raw.push({ t: 'eq', s: a[i] });
+          i += 1;
+          j += 1;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          raw.push({ t: 'del', s: a[i] });
+          i += 1;
+        } else {
+          raw.push({ t: 'ins', s: b[j] });
+          j += 1;
+        }
+      }
+      while (i < n) {
+        raw.push({ t: 'del', s: a[i] });
+        i += 1;
+      }
+      while (j < m) {
+        raw.push({ t: 'ins', s: b[j] });
+        j += 1;
+      }
+      const parts = mergeDiffParts(raw);
+      let del = 0;
+      let ins = 0;
+      parts.forEach((p) => {
+        if (p.t === 'del') del += p.s.length;
+        if (p.t === 'ins') ins += p.s.length;
+      });
+      return { parts, del, ins };
+    }
+
+    function diffPartsToHtml(parts) {
+      return parts.map((p) => {
+        const e = escapeHtml(p.s).replace(/\n/g, '<br>');
+        if (p.t === 'del') return '<span class="diff-del">' + e + '</span>';
+        if (p.t === 'ins') return '<ins class="diff-ins">' + e + '</ins>';
+        return e;
+      }).join('');
+    }
+
+    function originalMdForOpt(opt) {
+      refreshTargets();
+      if (Array.isArray(opt.items) && state.targets && state.targets.length === opt.items.length) {
+        return state.targets.map((t) => t.md);
+      }
+      if (state.slice) return [state.slice.mdSlice];
+      return [''];
+    }
+
+    function buildOptDiff(opt) {
+      const olds = originalMdForOpt(opt);
+      const news = Array.isArray(opt.items) && opt.items.length === olds.length
+        ? opt.items
+        : [opt.md || ''];
+      let del = 0;
+      let ins = 0;
+      const blocks = olds.map((oldMd, i) => {
+        const d = diffPlain(mdToPlainForDiff(oldMd), mdToPlainForDiff(news[i] || ''));
+        del += d.del;
+        ins += d.ins;
+        return d;
+      });
+      let html;
+      if (blocks.length > 1) {
+        html = blocks.map((d, i) =>
+          '<div class="diff-block"><div class="n">' + (i + 1) + '</div><div>' +
+          (d.del + d.ins === 0
+            ? '<span class="diff-same">（无改动）</span>' + diffPartsToHtml(d.parts)
+            : diffPartsToHtml(d.parts)) +
+          '</div></div>'
+        ).join('');
+      } else {
+        html = (blocks[0].del + blocks[0].ins === 0)
+          ? '<span class="diff-same">与原文相同</span>'
+          : diffPartsToHtml(blocks[0].parts);
+      }
+      return { html, del, ins };
+    }
+
+    function diffStatText(del, ins) {
+      if (!del && !ins) return '无改动';
+      const bits = [];
+      if (del) bits.push('删 ' + del + ' 字');
+      if (ins) bits.push('增 ' + ins + ' 字');
+      return bits.join(' · ');
+    }
+
+    function renderOpts() {
+      if (isChatMode()) {
+        renderChat();
+        return;
+      }
+      const box = document.getElementById('opts');
+      if (!state.options.length) {
+        box.innerHTML = '<div class="empty"><b>' + (state.tab === 'proof' ? '校对' : '写作') +
+          '</b>点标题 / 加黑「一是」或拖选正文 → 写要求 → 出方案</div>';
+        return;
+      }
+      const view = state.optViewMode === 'new' ? 'new' : 'diff';
+      box.innerHTML = state.options.map((opt) => {
+        const chosen = state.previewId === opt.id;
+        const adopted = state.adoptedId === opt.id;
+        let cls = 'opt';
+        if (opt.recommend) cls += ' recommend';
+        if (adopted) cls += ' adopted';
+        else if (chosen) cls += ' chosen';
+        let badge = '点击预览';
+        if (adopted && chosen) badge = '已采用 · 预览中';
+        else if (adopted) badge = '已采用';
+        else if (chosen) badge = '预览中';
+        const adoptLabel = adopted ? '已采用' : (state.adoptedId ? '替换为此方案' : '采用');
+        const bodyMd = Array.isArray(opt.items) ? opt.items.join('\n\n') : opt.md;
+        const diff = buildOptDiff(opt);
+        const bodyHtml = view === 'new'
+          ? mdBlockToHtml(bodyMd, null, '', null)
+          : diff.html;
+        const bodyCls = view === 'new' ? 'body' : 'body diff-body';
+        const score = (opt.score >= 1 && opt.score <= 10) ? (opt.score + '分') : '';
+        const note = opt.note ? ('<div class="note">' + escapeHtml(opt.note) + '</div>') : '';
+        const rec = opt.recommend ? '<span class="rec">推荐</span>' : '';
+        return `
+          <div class="${cls}" data-opt="${opt.id}">
+            <div class="opt-head">
+              <span class="tag">${opt.id}</span>
+              ${rec}
+              ${score ? '<span class="score">' + score + '</span>' : ''}
+              <span class="badge">${badge}</span>
+              <div class="opt-view-tabs">
+                <button type="button" data-opt-view="diff" class="${view === 'diff' ? 'on' : ''}">对照</button>
+                <button type="button" data-opt-view="new" class="${view === 'new' ? 'on' : ''}">新稿</button>
+              </div>
+              <span class="diff-stat">${diffStatText(diff.del, diff.ins)}</span>
+            </div>
+            ${note}
+            <div class="${bodyCls}" data-preview="${opt.id}">${bodyHtml}</div>
+            <div class="opt-actions">
+              <button type="button" class="btn-preview" data-preview="${opt.id}">预览</button>
+              <button type="button" class="btn-adopt" data-adopt="${opt.id}" ${adopted ? 'disabled' : ''}>${adoptLabel}</button>
+            </div>
+          </div>`;
+      }).join('');
+    }
+
+    function setLocked(on) {
+      state.locked = on;
+      const banner = document.getElementById('lockBanner');
+      banner.textContent = isChatMode() ? '正在回答…' : '正在按要求出方案…';
+      banner.classList.toggle('show', on);
+      updateChrome();
+    }
+
+    function currentContextMd() {
+      if (!state.slice) return '';
+      refreshTargets();
+      if (state.targets && state.targets.length > 1) {
+        return state.targets.map((t) => t.md).join('\n\n');
+      }
+      return state.slice.mdSlice || '';
+    }
+
+    function plainOffsetsForMdRange(blockMd, mdFrom, mdTo) {
+      const map = buildPlainMap(blockMd);
+      if (!map.length) return { plainStart: 0, plainEnd: 0 };
+      let plainStart = 0;
+      while (plainStart < map.length && map[plainStart] < mdFrom) plainStart += 1;
+      let plainEnd = plainStart;
+      while (plainEnd < map.length && map[plainEnd] < mdTo) plainEnd += 1;
+      return { plainStart, plainEnd };
+    }
+
+    function setDomRangeFromPlainOffsets(el, plainStart, plainEnd) {
+      if (!el) return false;
+      if (!(plainEnd > plainStart)) {
+        const all = document.createRange();
+        all.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(all);
+        return true;
+      }
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let pos = 0;
+      let startNode = null;
+      let startOffset = 0;
+      let endNode = null;
+      let endOffset = 0;
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        const len = node.nodeValue ? node.nodeValue.length : 0;
+        if (!len) continue;
+        if (!startNode && pos + len > plainStart) {
+          startNode = node;
+          startOffset = plainStart - pos;
+        }
+        if (pos + len >= plainEnd) {
+          endNode = node;
+          endOffset = plainEnd - pos;
+          break;
+        }
+        pos += len;
+      }
+      if (!startNode) {
+        const all = document.createRange();
+        all.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(all);
+        return true;
+      }
+      if (!endNode) {
+        endNode = startNode;
+        endOffset = startNode.nodeValue.length;
+      }
+      const range = document.createRange();
+      range.setStart(startNode, Math.max(0, Math.min(startOffset, startNode.nodeValue.length)));
+      range.setEnd(endNode, Math.max(0, Math.min(endOffset, endNode.nodeValue.length)));
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return true;
+    }
+
+    /** 重绘后恢复浏览器原生选区，便于 Ctrl+C 复制 */
+    function restoreNativeSelection() {
+      if (!state.slice) return;
+      const root = document.getElementById('doc');
+      if (!root) return;
+      const blockId = state.slice.blockId;
+      const el = root.querySelector('.gw-block[data-block="' + blockId + '"]');
+      if (!el) return;
+      const block = state.blocks.find((b) => b.id === blockId);
+      if (!block) return;
+
+      if (state.slice.kind === 'enum') {
+        const hit = el.querySelector(
+          'strong.gw-enum[data-from="' + state.slice.mdFrom + '"]'
+        );
+        if (hit) {
+          const range = document.createRange();
+          range.selectNodeContents(hit);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          return;
+        }
+      }
+
+      if (state.slice.kind === 'heading' ||
+          (!state.slice.prefix && !state.slice.suffix && state.slice.kind !== 'slice')) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return;
+      }
+
+      const { plainStart, plainEnd } = plainOffsetsForMdRange(
+        block.md,
+        state.slice.mdFrom,
+        state.slice.mdTo,
+      );
+      setDomRangeFromPlainOffsets(el, plainStart, plainEnd);
+    }
+
+    function applySlice(slice) {
+      const keepRound = state.allowNextSelect && isChatMode();
+      state.slice = slice;
+      state.allowNextSelect = false;
+      if (!keepRound) {
+        state.options = [];
+        state.previewId = null;
+        state.adoptedId = null;
+        state.genRound = 0;
+      }
+      state.targets = null;
+      // 换选区时若全文窗开着则保持开着并刷新内容
+      if (!slice) state.selFullOpen = false;
+      renderDoc();
+      renderOpts();
+      updateChrome();
+      // 等 DOM 落稳后再恢复选区，避免被重绘冲掉
+      requestAnimationFrame(() => {
+        restoreNativeSelection();
+      });
+    }
+
+    function closestBlock(node) {
+      if (!node) return null;
+      const el = node.nodeType === 1 ? node : node.parentElement;
+      // 只认块级 .gw-block，忽略加黑小标题上的标记
+      return el ? el.closest('.gw-block[data-block]') : null;
+    }
+
+    function captureSelectionFromDom() {
+      // 出方案进行中：保留浏览器选区供复制，不改工作选区、不清方案
+      if (isWorkingSelectionFrozen()) return false;
+      const root = document.getElementById('doc');
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+
+      const range = sel.getRangeAt(0);
+      if (!root.contains(range.commonAncestorContainer)) return false;
+      const startBlock = closestBlock(range.startContainer);
+      const endBlock = closestBlock(range.endContainer);
+      if (!startBlock || !endBlock || startBlock !== endBlock || !root.contains(startBlock)) {
+        toast('请在同一段内选中');
+        return false;
+      }
+
+      const blockId = startBlock.getAttribute('data-block');
+      const block = state.blocks.find((b) => b.id === blockId);
+      if (!block) return false;
+
+      const pre = document.createRange();
+      pre.selectNodeContents(startBlock);
+      pre.setEnd(range.startContainer, range.startOffset);
+      const mapped = plainRangeToMdSlice(
+        block.md,
+        pre.toString().length,
+        pre.toString().length + range.toString().length,
+      );
+      if (!mapped) return false;
+
+      applySlice({
+        blockId,
+        mdFrom: mapped.mdFrom,
+        mdTo: mapped.mdTo,
+        mdSlice: mapped.mdSlice,
+        prefix: mapped.prefix,
+        suffix: mapped.suffix,
+        kind: 'slice',
+      });
+      return true;
+    }
+
+    function selectHeadingBlock(id) {
+      if (isWorkingSelectionFrozen()) {
+        toast('本轮进行中，选中仅用于复制；换选区请点「重选」');
+        return;
+      }
+      const block = state.blocks.find((b) => b.id === id);
+      if (!block || !isHeadingBlock(block)) return;
+      applySlice(Object.assign(wholeBlockSlice(block), { kind: 'heading' }));
+      refreshTargets();
+      const n = state.targets ? state.targets.length : 1;
+      if (n > 1) toast('已选中同级标题 ' + n + ' 个');
+    }
+
+    function selectEnumTitle(blockId, mdFrom, mdTo) {
+      if (isWorkingSelectionFrozen()) {
+        toast('本轮进行中，选中仅用于复制；换选区请点「重选」');
+        return;
+      }
+      const block = state.blocks.find((b) => b.id === blockId);
+      if (!block) return;
+      const from = Number(mdFrom);
+      const to = Number(mdTo);
+      if (!(to > from)) return;
+      const mdSlice = block.md.slice(from, to);
+      if (!isEnumBoldInner(mdSlice.replace(/^\*\*|\*\*$/g, ''))) return;
+      applySlice({
+        blockId,
+        mdFrom: from,
+        mdTo: to,
+        mdSlice,
+        prefix: block.md.slice(0, from),
+        suffix: block.md.slice(to),
+        kind: 'enum',
+      });
+      refreshTargets();
+      const n = state.targets ? state.targets.length : 1;
+      toast(n > 1 ? ('已选中加黑小标题 ' + n + ' 个') : '已选中加黑小标题');
+    }
+
+    function buildSuggestPayload(requirement) {
+      refreshTargets();
+      const multi = state.targets && state.targets.length > 1;
+      const payload = {
+        md: multi ? state.targets.map((t) => t.md).join('\n\n') : state.slice.mdSlice,
+        requirement: requirement,
+        count: state.optionCount,
+        tab: state.tab,
+        round: state.genRound,
+      };
+      if (multi) {
+        payload.items = state.targets.map((t) => t.md);
+      } else if (state.slice) {
+        payload.context_before = clipContext(state.slice.prefix, 'before', 80);
+        payload.context_after = clipContext(state.slice.suffix, 'after', 80);
+      }
+      return payload;
+    }
+
+    async function sendChat() {
+      const input = document.getElementById('reqInput');
+      const msg = (input.value || '').trim();
+      if (!msg) {
+        toast('请先输入问题');
+        return;
+      }
+      const token = ++state.genToken;
+      const history = state.chatMessages.map((m) => ({ role: m.role, content: m.content }));
+      state.chatMessages.push({ role: 'user', content: msg });
+      input.value = '';
+      renderChat();
+      setLocked(true);
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: msg,
+            context_md: currentContextMd(),
+            doc_md: state.md || '',
+            history: history,
+            tab: state.tab,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (token !== state.genToken) return;
+        if (!res.ok || data.error) throw new Error(data.error || ('对话失败 HTTP ' + res.status));
+        const reply = String(data.reply || '').trim();
+        if (!reply) throw new Error('未返回回答');
+        state.chatMessages.push({ role: 'assistant', content: reply });
+        renderChat();
+      } catch (err) {
+        if (token !== state.genToken) return;
+        state.chatMessages.push({ role: 'assistant', content: '（失败）' + String(err.message || err) });
+        renderChat();
+        toast(String(err.message || err));
+      } finally {
+        if (token === state.genToken) setLocked(false);
+        updateChrome();
+      }
+    }
+
+    async function genOptions() {
+      if (!state.slice) {
+        toast('请先选中一处');
+        return;
+      }
+      const token = ++state.genToken;
+      const req = document.getElementById('reqInput').value;
+      const again = state.options.length > 0;
+      if (again) state.genRound += 1;
+
+      setLocked(true);
+      state.previewId = null;
+      state.options = [];
+      state.adoptedId = null;
+      renderOpts();
+      updateChrome();
+
+      try {
+        const res = await fetch('/api/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildSuggestPayload(req)),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (token !== state.genToken) return;
+        if (!res.ok || data.error) throw new Error(data.error || ('出方案失败 HTTP ' + res.status));
+        const opts = Array.isArray(data.options) ? data.options : [];
+        if (!opts.length) throw new Error('未返回方案');
+        state.options = opts.map((o, i) => {
+          let score = Number(o.score);
+          if (!Number.isFinite(score)) score = 0;
+          score = Math.max(0, Math.min(10, Math.round(score)));
+          return {
+            id: String(o.id != null ? o.id : i + 1),
+            md: String(o.md || ''),
+            items: Array.isArray(o.items) ? o.items.map(String) : null,
+            score,
+            note: String(o.note || '').trim(),
+            recommend: !!o.recommend,
+          };
+        }).filter((o) => o.md || (o.items && o.items.length));
+        if (!state.options.length) throw new Error('方案内容为空');
+        if (!state.options.some((o) => o.recommend)) {
+          let best = 0;
+          for (let i = 1; i < state.options.length; i++) {
+            if (state.options[i].score > state.options[best].score) best = i;
+          }
+          state.options[best].recommend = true;
+        }
+        // 推荐套排到最前，便于一眼看到
+        state.options.sort((a, b) => (b.recommend - a.recommend) || (b.score - a.score));
+        renderDoc();
+        renderOpts();
+        updateChrome();
+        const rec = state.options.find((o) => o.recommend);
+        const tip = rec ? ('（推荐第' + rec.id + '套）') : '';
+        toast(again ? ('已再出 ' + state.options.length + ' 套' + tip) : ('已出 ' + state.options.length + ' 套' + tip));
+      } catch (err) {
+        if (token !== state.genToken) return;
+        state.options = [];
+        renderOpts();
+        updateChrome();
+        toast(String(err.message || err));
+      } finally {
+        if (token === state.genToken) setLocked(false);
+        updateChrome();
+      }
+    }
+
+    function onComposeSend() {
+      if (isChatMode()) sendChat();
+      else genOptions();
+    }
+
+    function previewOption(id) {
+      if (!state.options.find((o) => o.id === id)) return;
+      state.previewId = id;
+      renderDoc();
+      renderOpts();
+      updateChrome();
+    }
+
+    function clearOptionPreview(silent) {
+      if (!state.previewId) return false;
+      state.previewId = null;
+      renderDoc();
+      renderOpts();
+      updateChrome();
+      if (!silent) toast('已还原原文预览');
+      return true;
+    }
+
+    function applyMultiAdopt(opt) {
+      if (opt.items.length !== state.targets.length) {
+        toast('方案标题条数与选中不一致');
+        return false;
+      }
+      const enumMulti = state.targets[0].kind === 'enum';
+      const reps = state.targets.map((t, i) => {
+        const b = state.blocks.find((x) => x.id === t.blockId);
+        if (!b) return null;
+        const from = t.mdFrom != null ? t.mdFrom : 0;
+        const to = t.mdTo != null ? t.mdTo : b.md.length;
+        let piece = opt.items[i];
+        if (t.kind === 'enum') piece = normalizeEnumItemMd(piece);
+        return { absStart: b.start + from, absEnd: b.start + to, md: piece };
+      }).filter(Boolean).sort((a, b) => b.absStart - a.absStart);
+
+      let md = state.md;
+      reps.forEach((row) => {
+        md = md.slice(0, row.absStart) + row.md + md.slice(row.absEnd);
+      });
+      state.md = md;
+      state.blocks = splitMdBlocks(state.md);
+
+      if (enumMulti) {
+        const seedId = state.slice.blockId;
+        const seed = state.blocks.find((b) => b.id === seedId) ||
+          state.blocks.find((b) => listEnumTitlesInBlock(b.md).length);
+        const first = seed ? listEnumTitlesInBlock(seed.md)[0] : null;
+        if (seed && first) {
+          state.slice = {
+            blockId: seed.id,
+            mdFrom: first.mdFrom,
+            mdTo: first.mdTo,
+            mdSlice: first.md,
+            prefix: seed.md.slice(0, first.mdFrom),
+            suffix: seed.md.slice(first.mdTo),
+            kind: 'enum',
+          };
+        }
+      } else {
+        const anchor = state.blocks.find((b) => b.id === state.slice.blockId);
+        if (anchor) state.slice = Object.assign(wholeBlockSlice(anchor), { kind: 'heading' });
+      }
+      refreshTargets();
+      return true;
+    }
+
+    function applySingleAdopt(opt) {
+      const block = state.blocks.find((b) => b.id === state.slice.blockId);
+      if (!block) return false;
+      let piece = opt.md;
+      if (state.slice.kind === 'enum') piece = normalizeEnumItemMd(piece);
+      const newBlockMd = state.slice.prefix + piece + state.slice.suffix;
+      state.md = state.md.slice(0, block.start) + newBlockMd + state.md.slice(block.end);
+      state.slice = {
+        blockId: state.slice.blockId,
+        mdFrom: state.slice.prefix.length,
+        mdTo: state.slice.prefix.length + piece.length,
+        mdSlice: piece,
+        prefix: state.slice.prefix,
+        suffix: state.slice.suffix,
+        kind: state.slice.kind || 'slice',
+      };
+      return true;
+    }
+
+    function adoptOption(id) {
+      const opt = state.options.find((o) => o.id === id);
+      if (!opt || !state.slice) return;
+      if (state.adoptedId === id && !state.previewId) {
+        toast('已是当前采用方案');
+        return;
+      }
+      refreshTargets();
+      const multi = state.targets && state.targets.length > 1 && Array.isArray(opt.items);
+      const ok = multi ? applyMultiAdopt(opt) : applySingleAdopt(opt);
+      if (!ok) return;
+      state.adoptedId = id;
+      state.previewId = null;
+      renderDoc();
+      renderOpts();
+      updateChrome();
+      toast('已采用方案 ' + id + '，可继续替换或再出');
+    }
+
+    let skipNextClick = false;
+    const docEl = document.getElementById('doc');
+    docEl.addEventListener('mouseup', () => {
+      if (captureSelectionFromDom()) skipNextClick = true;
+    });
+    docEl.addEventListener('click', (e) => {
+      if (skipNextClick) {
+        skipNextClick = false;
+        return;
+      }
+      if (isWorkingSelectionFrozen()) return;
+      // 仍有拖选范围时，绝不走标题/一是逻辑
+      const live = window.getSelection();
+      if (live && !live.isCollapsed && docEl.contains(live.anchorNode)) return;
+
+      const enumEl = e.target.closest('[data-enum-title]');
+      if (enumEl && docEl.contains(enumEl)) {
+        selectEnumTitle(
+          enumEl.getAttribute('data-enum-block'),
+          enumEl.getAttribute('data-from'),
+          enumEl.getAttribute('data-to'),
+        );
+        return;
+      }
+      const el = e.target.closest('h1[data-block], h2[data-block], h3[data-block], h4[data-block], h5[data-block], h6[data-block]');
+      if (!el || !docEl.contains(el)) return;
+      selectHeadingBlock(el.getAttribute('data-block'));
+    });
+
+    document.getElementById('selHint').addEventListener('click', () => {
+      if (!state.slice) return;
+      // 预览中：先还原原文；已是原文时再切换展开/收起
+      if (state.previewId && !isChatMode()) {
+        clearOptionPreview();
+        return;
+      }
+      setSelFullOpen(!state.selFullOpen);
+      updateChrome();
+    });
+    document.getElementById('selFull').addEventListener('click', (e) => {
+      if (e.target.closest('button')) return;
+      if (!state.slice || isChatMode() || !state.previewId) return;
+      clearOptionPreview();
+    });
+    document.getElementById('selFullClose').addEventListener('click', (e) => {
+      e.stopPropagation();
+      setSelFullOpen(false);
+      updateChrome();
+    });
+    document.getElementById('selCopyBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyWorkingSelection();
+    });
+    document.getElementById('selFullCopy').addEventListener('click', (e) => {
+      e.stopPropagation();
+      copyWorkingSelection();
+    });
+    document.getElementById('btnReselect').addEventListener('click', (e) => {
+      e.stopPropagation();
+      requestReselect();
+    });
+
+    document.getElementById('btnClearChat').addEventListener('click', () => {
+      if (!isChatMode() || state.locked) return;
+      if (!state.chatMessages.length) return;
+      state.chatMessages = [];
+      state.genToken += 1;
+      renderChat();
+      updateChrome();
+      toast('对话已清空');
+    });
+    document.getElementById('btnSend').addEventListener('click', onComposeSend);
+    document.getElementById('reqInput').addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      if (e.shiftKey) return; // Shift+Enter 换行
+      e.preventDefault();
+      if (!document.getElementById('btnSend').disabled) onComposeSend();
+    });
+    document.getElementById('countSelect').addEventListener('change', (e) => {
+      const v = e.target.value;
+      if (v === 'chat') {
+        state.composeMode = 'chat';
+      } else {
+        state.composeMode = 'suite';
+        state.optionCount = Number(v) || 3;
+      }
+      renderOpts();
+      updateChrome();
+    });
+    document.getElementById('opts').addEventListener('click', (e) => {
+      const viewBtn = e.target.closest('[data-opt-view]');
+      if (viewBtn) {
+        e.stopPropagation();
+        state.optViewMode = viewBtn.getAttribute('data-opt-view') === 'new' ? 'new' : 'diff';
+        renderOpts();
+        return;
+      }
+      const adopt = e.target.closest('[data-adopt]');
+      if (adopt) {
+        adoptOption(adopt.getAttribute('data-adopt'));
+        return;
+      }
+      const preview = e.target.closest('[data-preview]');
+      if (preview) previewOption(preview.getAttribute('data-preview'));
+    });
+    document.getElementById('tabWrite').addEventListener('click', () => {
+      state.tab = 'write';
+      document.getElementById('tabWrite').classList.add('on');
+      document.getElementById('tabProof').classList.remove('on');
+      updateChrome();
+      renderOpts();
+    });
+    document.getElementById('tabProof').addEventListener('click', () => {
+      state.tab = 'proof';
+      document.getElementById('tabProof').classList.add('on');
+      document.getElementById('tabWrite').classList.remove('on');
+      updateChrome();
+      renderOpts();
+    });
+
+    renderDoc();
+    renderOpts();
+    updateChrome();
+  </script>
+</body>
+</html>

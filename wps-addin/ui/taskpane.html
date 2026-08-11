@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>公文助手</title>
+  <link rel="stylesheet" href="./ai-aside.css" />
+  <script type="text/javascript" src="../js/util.js"></script>
+  <script type="text/javascript" src="../js/userPrefs.js"></script>
+  <script type="text/javascript" src="../js/followHost.js"></script>
+  <script type="text/javascript" src="../js/docapi.js"></script>
+  <script type="text/javascript" src="../js/relay.js"></script>
+  <script type="text/javascript" src="../js/projectRoot.js"></script>
+  <script type="text/javascript" src="../js/taskpane.js"></script>
+  <script type="text/javascript">
+    /* TaskPane 停靠：原生跟主窗，勿关窗重开 */
+    if (window.GwUserPrefs) GwUserPrefs.watchWindow("assistant", { docked: true });
+  </script>
+</head>
+<body>
+  <aside id="aiAside" aria-label="人机双写">
+    <div class="ai-head">
+      <div class="ai-tabs">
+        <button type="button" class="on" id="aiTabWrite" data-tab="write">撰写</button>
+        <button type="button" id="aiTabSuite" data-tab="suite">精修</button>
+        <button type="button" id="aiTabProof" data-tab="proof">校对</button>
+      </div>
+      <div class="ai-head-actions" id="aiHeadActions">
+        <select id="aiCapability" class="ai-session-sel" aria-label="智能能力" title="标准 / 增强">
+          <option value="fast">标准</option>
+          <option value="strong">增强</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="ai-proof-bar" id="aiProofBar" hidden>
+      <div class="ai-proof-row">
+        <label class="ai-proof-scope"><input type="radio" name="proofScope" value="selection" /> 选区</label>
+        <label class="ai-proof-scope"><input type="radio" name="proofScope" value="full" checked /> 全文</label>
+      </div>
+      <div class="ai-proof-actions">
+        <button type="button" class="primary" id="proofRun">开始校对</button>
+        <button type="button" id="proofClear" disabled>清空</button>
+      </div>
+    </div>
+
+    <div class="ai-opts" id="aiOpts">
+      <div class="ai-empty">划选正文后，在下方输入要求；撰写走对话，精修出方案，校对出问题列表。</div>
+    </div>
+
+    <div class="ai-compose" id="aiCompose">
+      <div class="ai-sel-block" id="aiSelBlock">
+        <div class="ai-sel-pop" id="aiSelPop" hidden>
+          <div class="ai-sel-pop-bar">
+            <span id="aiSelPopMeta">0 字</span>
+            <span class="ai-sel-pop-actions">
+              <button type="button" id="aiSelPopCopy">复制</button>
+              <button type="button" id="aiSelPopClose">收起</button>
+            </span>
+          </div>
+          <div class="ai-sel-pop-body" id="aiSelPopBody"></div>
+        </div>
+        <div class="ai-sel-row" id="aiSelRow">
+          <button type="button" class="ai-sel" id="aiSel" title="有内容时点击展开/收起全文">
+            <span class="ai-sel-text" id="aiSelText">未钉住 · 划选后点钉住</span>
+            <span class="ai-sel-x" id="aiSelClear" hidden title="清除">×</span>
+          </button>
+          <button type="button" class="ai-sel-btn primary-ish" id="aiSelCommit" title="把当前划选钉到右侧">钉住</button>
+        </div>
+        <label class="ai-expand-sib" id="aiExpandSibWrap" hidden title="钉住时并入同级标题">
+          <input type="checkbox" id="aiExpandSib" />
+          <span>扩选同级标题</span>
+        </label>
+      </div>
+      <div class="ai-cite-bar" id="aiCiteBar" hidden aria-label="已引用素材"></div>
+      <div class="ai-suite-presets" id="aiWriteTips" hidden aria-label="撰写引导">
+        <button type="button" data-write-tip="请帮我明确本稿读者、主旨一句话与不写的边界。先讨论立意，少写正文。">立意</button>
+        <button type="button" data-write-tip="请帮我搭一、二、三级标题骨架，先出可落稿的目录，少写段落。">搭架</button>
+        <button type="button" data-write-tip="请按现有标题充填事实与数据；无依据处标待核实，禁止编造数字。">充填</button>
+      </div>
+      <div class="ai-suite-presets" id="aiSuitePresets" hidden>
+        <button type="button" data-suite-preset="优化表述，更准确凝练">优化润色</button>
+        <button type="button" data-suite-preset="句式更工整对仗">工整对仗</button>
+        <button type="button" data-suite-preset="增强语言感染力">增强感染力</button>
+        <button type="button" data-suite-preset="更口语、好念">更口语化</button>
+        <button type="button" data-suite-preset="恰当加入名言警句（勿堆砌）">加名言警句</button>
+        <button type="button" data-suite-preset="删繁就简，保留要点">更简洁</button>
+      </div>
+      <textarea class="ai-req" id="aiReq" rows="3" placeholder="问点什么，或点上方立意 / 搭架 / 充填…"></textarea>
+      <div class="ai-toolbar">
+        <div class="ai-edit-mode" id="aiChatAuthWrap" role="radiogroup" aria-label="改稿权限">
+          <label class="ai-chat-auth" title="只问答，不改正文">
+            <input type="radio" name="aiEditMode" value="talk" id="aiEditModeTalk" checked />
+            <span>仅对话</span>
+          </label>
+          <label class="ai-chat-auth" title="回复可写回当前选区">
+            <input type="radio" name="aiEditMode" value="auth" id="aiEditModeAuth" />
+            <span>授权改稿</span>
+          </label>
+        </div>
+        <span class="ai-suite-hint" id="aiSuiteHint" hidden>精修会改写选定</span>
+        <button type="button" id="aiClearChat">清空</button>
+        <span class="spacer"></span>
+        <button type="button" class="primary" id="aiSend">发送</button>
+      </div>
+      <div class="ai-compose-foot" id="aiComposeFoot">
+        <span class="ai-edit-status" id="aiEditStatus">WPS</span>
+        <span class="ai-tip" id="aiTip">登录稍后接；有短票则自动用</span>
+      </div>
+    </div>
+  </aside>
+</body>
+</html>

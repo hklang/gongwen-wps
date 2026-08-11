@@ -1,0 +1,16 @@
+﻿node_modules/
+.DS_Store
+*.log
+.env
+.wpsjs/
+# 参考树里若再出现密钥/依赖
+var/**/.env
+var/**/node_modules/
+var/**/logs/
+
+# local secrets / state
+**/settings.py
+!**/settings.example.py
+**/server.local.md
+**/state.json
+wps-addin/tools/

@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>公文中转 · 运维后台</title>
+  <style>
+    :root {
+      --bg: #f4f2ef;
+      --panel: #fffdf9;
+      --ink: #1f1a17;
+      --muted: #6b635c;
+      --line: #ddd6ce;
+      --accent: #0f5c4c;
+      --danger: #9b2c2c;
+      --ok: #1f6b3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 14px/1.45 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(900px 420px at 10% -10%, #e7efe9 0%, transparent 55%),
+        radial-gradient(700px 380px at 100% 0%, #efe6d8 0%, transparent 50%),
+        var(--bg);
+      min-height: 100vh;
+    }
+    header {
+      display: flex; flex-wrap: wrap; gap: 12px; align-items: end;
+      justify-content: space-between;
+      padding: 20px 24px 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255,253,249,.88);
+      backdrop-filter: blur(6px);
+      position: sticky; top: 0; z-index: 2;
+    }
+    h1 { margin: 0; font-size: 20px; letter-spacing: .02em; }
+    .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .auth {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    }
+    input, select, textarea, button {
+      font: inherit; border: 1px solid var(--line); border-radius: 6px;
+      background: #fff; color: var(--ink); padding: 7px 10px;
+    }
+    input[type="password"], input[type="text"], input[type="email"], input[type="number"] {
+      min-width: 180px;
+    }
+    textarea { width: 100%; min-height: 120px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+    button { cursor: pointer; }
+    button.primary { background: var(--accent); color: #fff; border-color: #0c4a3d; }
+    button.danger { background: #fff; color: var(--danger); border-color: #e2b4b4; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    nav {
+      display: flex; gap: 6px; padding: 12px 24px 0; flex-wrap: wrap;
+    }
+    nav button {
+      background: transparent; border-color: transparent; color: var(--muted);
+    }
+    nav button.on { color: var(--ink); border-color: var(--line); background: var(--panel); }
+    main { padding: 16px 24px 40px; max-width: 1100px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+      padding: 16px; margin-top: 12px;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .ok { color: var(--ok); }
+    .err { color: var(--danger); }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; font-size: 12px; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    code { font-size: 12px; background: #f0ebe4; padding: 1px 5px; border-radius: 4px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 800px) { .grid2 { grid-template-columns: 1fr; } }
+    label.field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); flex: 1; min-width: 140px; }
+    label.field > * { color: var(--ink); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>公文中转 · 运维后台</h1>
+      <div class="sub">仅管账号 / 路由 / 官方内容 · 不管用户本地稿</div>
+    </div>
+    <div class="auth">
+      <label class="field">
+        API 根
+        <input id="base" type="text" placeholder="留空=当前站点" />
+      </label>
+      <label class="field">
+        运维令牌
+        <input id="token" type="password" placeholder="RELAY_TOKEN" autocomplete="off" />
+      </label>
+      <button class="primary" id="btnSaveAuth" type="button">保存</button>
+      <button id="btnHealth" type="button">探活</button>
+    </div>
+  </header>
+  <nav id="tabs">
+    <button type="button" class="on" data-tab="overview">概览</button>
+    <button type="button" data-tab="users">用户</button>
+    <button type="button" data-tab="routes">路由</button>
+    <button type="button" data-tab="content">内容</button>
+    <button type="button" data-tab="invites">邀请码</button>
+    <button type="button" data-tab="orgs">组织</button>
+  </nav>
+  <main>
+    <div id="status" class="muted"></div>
+
+    <section class="panel tab" data-pane="overview">
+      <div id="healthBox" class="muted">尚未探活</div>
+    </section>
+
+    <section class="panel tab" data-pane="users" hidden>
+      <div class="row">
+        <button class="primary" type="button" id="btnUsers">刷新用户</button>
+        <span class="muted">禁用 / 踢下线 / 开通套餐</span>
+      </div>
+      <div class="row">
+        <label class="field">邮箱<input id="grantEmail" type="email" placeholder="user@ex.com" /></label>
+        <label class="field">套餐
+          <select id="grantPlan"><option value="pro">pro</option><option value="free">free</option></select>
+        </label>
+        <label class="field">天数<input id="grantDays" type="number" value="30" min="1" max="3650" /></label>
+        <button type="button" id="btnGrant">开通/续期</button>
+      </div>
+      <table>
+        <thead><tr><th>邮箱</th><th>状态</th><th>套餐</th><th>操作</th></tr></thead>
+        <tbody id="userBody"></tbody>
+      </table>
+    </section>
+
+    <section class="panel tab" data-pane="routes" hidden>
+      <div class="row">
+        <button class="primary" type="button" id="btnRoutes">刷新路由</button>
+      </div>
+      <div class="grid2">
+        <div>
+          <table>
+            <thead><tr><th>capability</th><th>task</th><th>provider/model</th><th>w</th></tr></thead>
+            <tbody id="routeBody"></tbody>
+          </table>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:8px">新增 / 覆盖一行路由</div>
+          <div class="row">
+            <label class="field">capability
+              <select id="rCap"><option>fast</option><option>strong</option><option>proof</option></select>
+            </label>
+            <label class="field">task
+              <select id="rTask"><option>chat</option><option>suggest</option><option>proofread</option></select>
+            </label>
+          </div>
+          <div class="row">
+            <label class="field">provider<input id="rProv" type="text" value="deepseek" /></label>
+            <label class="field">model<input id="rModel" type="text" value="deepseek-v4-flash" /></label>
+            <label class="field">weight<input id="rWeight" type="number" value="100" /></label>
+          </div>
+          <div class="row">
+            <label><input id="rExclusive" type="checkbox" /> exclusive（清同 cap×task 其它行）</label>
+            <button class="primary" type="button" id="btnUpsertRoute">保存路由</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel tab" data-pane="content" hidden>
+      <div class="row">
+        <button class="primary" type="button" id="btnContent">刷新目录</button>
+      </div>
+      <div id="contentBox" class="muted">—</div>
+      <hr style="border:none;border-top:1px solid var(--line);margin:16px 0" />
+      <div class="muted" style="margin-bottom:8px">上架 / 更新手册（body 为 Markdown）</div>
+      <div class="row">
+        <label class="field">code<input id="mCode" type="text" value="summary-basic" /></label>
+        <label class="field">title<input id="mTitle" type="text" value="工作总结写作要点" /></label>
+        <label class="field">category<input id="mCat" type="text" value="summary" /></label>
+        <label class="field">version<input id="mVer" type="text" value="2026.08" /></label>
+      </div>
+      <textarea id="mBody" placeholder="# 手册正文"></textarea>
+      <div class="row"><button type="button" id="btnManual">提交手册</button></div>
+      <div class="muted" style="margin:16px 0 8px">上架模板</div>
+      <div class="row">
+        <label class="field">code<input id="tCode" type="text" value="summary-skeleton" /></label>
+        <label class="field">title<input id="tTitle" type="text" value="半年工作总结骨架" /></label>
+        <label class="field">category<input id="tCat" type="text" value="summary" /></label>
+      </div>
+      <textarea id="tBody" placeholder="# 模板正文"></textarea>
+      <div class="row"><button type="button" id="btnTemplate">提交模板</button></div>
+      <div class="muted" style="margin:16px 0 8px">上架剧本（stages JSON 数组）</div>
+      <div class="row">
+        <label class="field">code<input id="pCode" type="text" value="summary-flow" /></label>
+        <label class="field">title<input id="pTitle" type="text" value="工作总结分步写" /></label>
+        <label class="field">category<input id="pCat" type="text" value="summary" /></label>
+      </div>
+      <textarea id="pStages" placeholder='[{"id":"intent","title":"立意","prompt":"...","tab":"write"}]'></textarea>
+      <div class="row"><button type="button" id="btnPlaybook">提交剧本</button></div>
+    </section>
+
+    <section class="panel tab" data-pane="invites" hidden>
+      <div class="row">
+        <button class="primary" type="button" id="btnInvites">刷新邀请码</button>
+        <span class="muted" id="regModeLabel">register_mode=?</span>
+      </div>
+      <div class="row">
+        <label class="field">套餐
+          <select id="invPlan"><option value="free">free</option><option value="pro">pro</option></select>
+        </label>
+        <label class="field">可用次数<input id="invUses" type="number" value="1" min="1" /></label>
+        <label class="field">有效天数<input id="invDays" type="number" value="30" min="0" title="0=不过期" /></label>
+        <label class="field">自定义码<input id="invCode" type="text" placeholder="空则自动生成" /></label>
+        <label class="field">备注<input id="invNote" type="text" placeholder="可选" /></label>
+        <button type="button" id="btnCreateInvite">生成</button>
+      </div>
+      <table>
+        <thead><tr><th>码</th><th>套餐</th><th>次数</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="inviteBody"></tbody>
+      </table>
+      <p class="muted" style="margin-top:12px">切强制邀请码：云 <code>.env</code> 设 <code>CONTROL_REGISTER_MODE=invite</code> 后 <code>./start.sh</code> 重启。health 可见 <code>register_mode</code>。</p>
+    </section>
+
+    <section class="panel tab" data-pane="orgs" hidden>
+      <div class="row">
+        <button class="primary" type="button" id="btnOrgs">刷新组织</button>
+        <span class="muted">席位占位 · 无支付</span>
+      </div>
+      <div class="row">
+        <label class="field">code<input id="orgCode" type="text" placeholder="acme" /></label>
+        <label class="field">名称<input id="orgName" type="text" placeholder="某某单位" /></label>
+        <label class="field">席位<input id="orgSeats" type="number" value="5" min="1" /></label>
+        <label class="field">手册包<input id="orgPack" type="text" placeholder="可选 pack code" /></label>
+        <button type="button" id="btnCreateOrg">创建组织</button>
+      </div>
+      <div class="row">
+        <label class="field">组织 code<input id="memOrg" type="text" placeholder="acme" /></label>
+        <label class="field">成员邮箱<input id="memEmail" type="email" /></label>
+        <button type="button" id="btnAddMem">加人</button>
+        <button type="button" class="danger" id="btnRmMem">移出</button>
+      </div>
+      <table>
+        <thead><tr><th>code</th><th>名称</th><th>席位</th><th>手册包</th><th>状态</th></tr></thead>
+        <tbody id="orgBody"></tbody>
+      </table>
+    </section>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const KEY_BASE = "gw_admin_base";
+    const KEY_TOKEN = "gw_admin_token";
+
+    function apiBase() {
+      const raw = ($("base").value || "").trim().replace(/\/$/, "");
+      if (raw) return raw;
+      // 当前页若挂在 /gongwen-relay/admin，则 API 同前缀
+      const path = location.pathname.replace(/\/admin\/?$/, "");
+      return location.origin + (path || "");
+    }
+
+    function token() {
+      return ($("token").value || "").trim();
+    }
+
+    function setStatus(msg, cls) {
+      const el = $("status");
+      el.textContent = msg || "";
+      el.className = cls || "muted";
+    }
+
+    async function api(method, path, body) {
+      const headers = { "Content-Type": "application/json" };
+      const t = token();
+      if (t) {
+        headers.Authorization = "Bearer " + t;
+        headers["X-Relay-Token"] = t;
+      }
+      const res = await fetch(apiBase() + path, {
+        method,
+        headers,
+        body: body != null ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch (_) { json = { raw: text }; }
+      if (!res.ok) {
+        const err = (json && (json.error || json.message)) || ("HTTP " + res.status);
+        throw new Error(err);
+      }
+      return json;
+    }
+
+    function loadAuth() {
+      try {
+        $("base").value = sessionStorage.getItem(KEY_BASE) || "";
+        $("token").value = sessionStorage.getItem(KEY_TOKEN) || "";
+      } catch (_) {}
+    }
+
+    function saveAuth() {
+      try {
+        sessionStorage.setItem(KEY_BASE, ($("base").value || "").trim());
+        sessionStorage.setItem(KEY_TOKEN, token());
+      } catch (_) {}
+      setStatus("令牌已写入 sessionStorage（关页即清）", "ok");
+    }
+
+    async function refreshHealth() {
+      const d = await api("GET", "/api/health");
+      $("healthBox").innerHTML =
+        "<div><b>service</b> " + esc(d.service) + "</div>" +
+        "<div>control=" + !!d.control + " · require_user=" + !!d.require_user +
+        " · maintenance=" + !!d.maintenance +
+        " · register_mode=" + esc(d.register_mode || "open") + "</div>" +
+        "<div class='muted' style='margin-top:8px'>API 根：<code>" + esc(apiBase()) + "</code></div>";
+      setStatus("探活 OK", "ok");
+    }
+
+    async function refreshInvites() {
+      const d = await api("GET", "/api/admin/invites?limit=200");
+      $("regModeLabel").textContent = "register_mode=" + (d.register_mode || "?");
+      const rows = d.invites || [];
+      $("inviteBody").innerHTML = rows.map((x) => {
+        const code = x.code || "";
+        const used = (x.used_count || 0) + "/" + (x.max_uses || 0);
+        return "<tr><td><code>" + esc(code) + "</code></td><td>" + esc(x.plan_code) +
+          "</td><td>" + esc(used) + "</td><td>" + esc(x.status) +
+          "</td><td class='actions'>" +
+          (x.status === "active"
+            ? "<button type='button' class='danger' data-revoke='" + esc(code) + "'>作废</button>"
+            : "—") +
+          "</td></tr>";
+      }).join("") || "<tr><td colspan='5' class='muted'>暂无邀请码</td></tr>";
+      setStatus("邀请码 " + rows.length + " 条", "ok");
+    }
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    async function refreshUsers() {
+      const d = await api("GET", "/api/admin/users?limit=200");
+      const rows = d.users || [];
+      $("userBody").innerHTML = rows.map((u) => {
+        const email = u.email || "";
+        return "<tr><td>" + esc(email) + "</td><td>" + esc(u.status || "") +
+          "</td><td>" + esc(u.plan_code || u.plan || "") +
+          "</td><td class='actions'>" +
+          "<button type='button' data-act='disable' data-email='" + esc(email) + "'>禁用</button>" +
+          "<button type='button' data-act='enable' data-email='" + esc(email) + "'>启用</button>" +
+          "<button type='button' class='danger' data-act='kick' data-email='" + esc(email) + "'>踢下线</button>" +
+          "</td></tr>";
+      }).join("") || "<tr><td colspan='4' class='muted'>无用户</td></tr>";
+      setStatus("用户 " + rows.length + " 人", "ok");
+    }
+
+    async function refreshRoutes() {
+      const d = await api("GET", "/api/admin/routes");
+      const rows = d.routes || [];
+      $("routeBody").innerHTML = rows.map((r) =>
+        "<tr><td>" + esc(r.capability) + "</td><td>" + esc(r.task) +
+        "</td><td><code>" + esc(r.provider) + "</code> / <code>" + esc(r.model) +
+        "</code></td><td>" + esc(r.weight) + (r.enabled === 0 ? " · off" : "") + "</td></tr>"
+      ).join("") || "<tr><td colspan='4' class='muted'>无路由</td></tr>";
+      setStatus("路由 " + rows.length + " 条", "ok");
+    }
+
+    async function refreshContent() {
+      const d = await api("GET", "/api/content/index");
+      const line = (arr, key) => (arr || []).map((x) => x[key] || x.code || "?").join(" · ") || "（空）";
+      $("contentBox").innerHTML =
+        "<div><b>分类</b> " + esc(line(d.categories, "name")) + "</div>" +
+        "<div><b>手册</b> " + esc(line(d.manuals, "code")) + "</div>" +
+        "<div><b>模板</b> " + esc(line(d.templates, "code")) + "</div>" +
+        "<div><b>剧本</b> " + esc(line(d.playbooks, "code")) + "</div>";
+      setStatus("内容目录已刷新", "ok");
+    }
+
+    document.getElementById("tabs").addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-tab]");
+      if (!btn) return;
+      const tab = btn.getAttribute("data-tab");
+      document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b === btn));
+      document.querySelectorAll(".tab").forEach((p) => {
+        p.hidden = p.getAttribute("data-pane") !== tab;
+      });
+    });
+
+    $("btnSaveAuth").onclick = saveAuth;
+    $("btnHealth").onclick = () => refreshHealth().catch((e) => setStatus(e.message, "err"));
+    $("btnUsers").onclick = () => refreshUsers().catch((e) => setStatus(e.message, "err"));
+    $("btnRoutes").onclick = () => refreshRoutes().catch((e) => setStatus(e.message, "err"));
+    $("btnContent").onclick = () => refreshContent().catch((e) => setStatus(e.message, "err"));
+    $("btnInvites").onclick = () => refreshInvites().catch((e) => setStatus(e.message, "err"));
+    async function refreshOrgs() {
+      const d = await api("GET", "/api/admin/orgs?limit=200");
+      const rows = d.orgs || [];
+      $("orgBody").innerHTML = rows.map((o) =>
+        "<tr><td><code>" + esc(o.code) + "</code></td><td>" + esc(o.name) +
+        "</td><td>" + esc((o.seats_used || 0) + "/" + (o.seat_limit || 0)) +
+        "</td><td>" + esc(o.manual_pack || "—") + "</td><td>" + esc(o.status) + "</td></tr>"
+      ).join("") || "<tr><td colspan='5' class='muted'>暂无组织</td></tr>";
+      setStatus("组织 " + rows.length + " 个", "ok");
+    }
+    $("btnOrgs").onclick = () => refreshOrgs().catch((e) => setStatus(e.message, "err"));
+    $("btnCreateOrg").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/orgs", {
+          code: $("orgCode").value.trim(),
+          name: $("orgName").value.trim(),
+          seat_limit: Number($("orgSeats").value) || 5,
+          manual_pack: $("orgPack").value.trim(),
+        });
+        setStatus("组织已创建", "ok");
+        await refreshOrgs();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+    $("btnAddMem").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/org-member", {
+          org: $("memOrg").value.trim(),
+          email: $("memEmail").value.trim(),
+        });
+        setStatus("已加人", "ok");
+        await refreshOrgs();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+    $("btnRmMem").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/org-member-remove", {
+          email: $("memEmail").value.trim(),
+        });
+        setStatus("已移出", "ok");
+        await refreshOrgs();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+    $("btnCreateInvite").onclick = async () => {
+      try {
+        const body = {
+          plan: $("invPlan").value,
+          max_uses: Number($("invUses").value) || 1,
+          days: Number($("invDays").value),
+          note: $("invNote").value.trim(),
+        };
+        const c = $("invCode").value.trim();
+        if (c) body.code = c;
+        const d = await api("POST", "/api/admin/invites", body);
+        setStatus("已生成 " + (d.code || ""), "ok");
+        $("invCode").value = "";
+        await refreshInvites();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+    $("inviteBody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-revoke]");
+      if (!btn) return;
+      try {
+        await api("POST", "/api/admin/invite-revoke", { code: btn.getAttribute("data-revoke") });
+        setStatus("已作废", "ok");
+        await refreshInvites();
+      } catch (err) { setStatus(err.message, "err"); }
+    });
+
+    $("userBody").addEventListener("click", async (e) => {
+      const btn = e.target.closest("[data-act]");
+      if (!btn) return;
+      const email = btn.getAttribute("data-email");
+      const act = btn.getAttribute("data-act");
+      try {
+        if (act === "kick") {
+          await api("POST", "/api/admin/kick", { email });
+          setStatus("已踢下线 " + email, "ok");
+        } else {
+          await api("POST", "/api/admin/user-status", {
+            email,
+            status: act === "disable" ? "disabled" : "active",
+          });
+          setStatus((act === "disable" ? "已禁用 " : "已启用 ") + email, "ok");
+        }
+        await refreshUsers();
+      } catch (err) {
+        setStatus(err.message, "err");
+      }
+    });
+
+    $("btnGrant").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/grant", {
+          email: $("grantEmail").value.trim(),
+          plan: $("grantPlan").value,
+          days: Number($("grantDays").value) || 30,
+        });
+        setStatus("已开通", "ok");
+        await refreshUsers();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+
+    $("btnUpsertRoute").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/routes", {
+          capability: $("rCap").value,
+          task: $("rTask").value,
+          provider: $("rProv").value.trim(),
+          model: $("rModel").value.trim(),
+          weight: Number($("rWeight").value) || 100,
+          exclusive: !!$("rExclusive").checked,
+          enabled: 1,
+        });
+        setStatus("路由已保存", "ok");
+        await refreshRoutes();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+
+    $("btnManual").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/manual", {
+          code: $("mCode").value.trim(),
+          title: $("mTitle").value.trim(),
+          category: $("mCat").value.trim(),
+          version: $("mVer").value.trim(),
+          body_md: $("mBody").value,
+        });
+        setStatus("手册已提交", "ok");
+        await refreshContent();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+
+    $("btnTemplate").onclick = async () => {
+      try {
+        await api("POST", "/api/admin/template", {
+          code: $("tCode").value.trim(),
+          title: $("tTitle").value.trim(),
+          category: $("tCat").value.trim(),
+          body_md: $("tBody").value,
+        });
+        setStatus("模板已提交", "ok");
+        await refreshContent();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+
+    $("btnPlaybook").onclick = async () => {
+      try {
+        const stages = JSON.parse($("pStages").value || "[]");
+        await api("POST", "/api/admin/playbook", {
+          code: $("pCode").value.trim(),
+          title: $("pTitle").value.trim(),
+          category: $("pCat").value.trim(),
+          stages,
+        });
+        setStatus("剧本已提交", "ok");
+        await refreshContent();
+      } catch (e) { setStatus(e.message, "err"); }
+    };
+
+    loadAuth();
+    refreshHealth().catch(() => {});
+  </script>
+</body>
+</html>

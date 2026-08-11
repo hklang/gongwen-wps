@@ -1,0 +1,6 @@
+{
+  "name": "gongwen-spike-http",
+  "addonType": "wps",
+  "description": "公文尖刀 HTTP 调试（纯静态 + wpsjs debug）",
+  "private": true
+}
