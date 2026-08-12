@@ -50,6 +50,10 @@
     var capability = opts.capability === "strong" ? "strong" : "fast";
     var allowEdit = !!opts.allowEdit;
     var citeMats = opts.materials || [];
+    var history = Array.isArray(opts.history) ? opts.history : [];
+    var sessionSummary = String(opts.session_summary || "");
+    var docMd = String(opts.doc_md || "");
+    var seedReadSet = Array.isArray(opts.read_set) ? opts.read_set.slice() : [];
     var onStatus = typeof opts.onStatus === "function" ? opts.onStatus : function () {};
 
     if (!message) {
@@ -60,7 +64,7 @@
     }
 
     var state = {
-      readSet: [],
+      readSet: seedReadSet.slice(),
       toolResults: [],
       steps: [],
       readMeta: []
@@ -174,7 +178,10 @@
         workspace: ws,
         tool_results: state.toolResults,
         read_set: state.readSet.slice(),
-        force_final: !!forceFinal
+        force_final: !!forceFinal,
+        history: history,
+        session_summary: sessionSummary,
+        doc_md: docMd
       }).then(function (json) {
         if (forceFinal) return { done: true, json: json };
         var parsed = GwMaterialTools.parseAgentPayload(
@@ -237,8 +244,10 @@
                 !GwMaterialTools.hasUsableReads(state.toolResults) &&
                 !(citeMats && citeMats.length)
               ) {
-                reply +=
-                  "\n\n（提示：本轮未成功精读到素材正文。请将材料放入工程「素材/」并点刷新，或右键引用后再试；无依据处勿编造数字。）";
+                if (!/未成功精读到素材正文/.test(reply)) {
+                  reply +=
+                    "\n\n（提示：本轮未成功精读到素材正文。请将材料放入工程「素材/」并点刷新，或右键引用后再试；无依据处勿编造数字。）";
+                }
               }
               status("完成", state);
               return {

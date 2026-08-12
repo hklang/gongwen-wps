@@ -284,7 +284,8 @@
         "force_final",
         "session_summary",
         "project_memory",
-        "history"
+        "history",
+        "doc_md"
       ].forEach(function (k) {
         if (extra[k] != null) body[k] = extra[k];
       });

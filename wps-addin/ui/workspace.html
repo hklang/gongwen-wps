@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="./ai-aside.css" />
   <link rel="stylesheet" href="./workspace.css" />
   <script type="text/javascript" src="../js/util.js"></script>
+  <script type="text/javascript" src="../js/gwlog.js"></script>
   <script type="text/javascript" src="../js/userPrefs.js"></script>
   <script type="text/javascript" src="../js/followHost.js"></script>
   <script type="text/javascript" src="../js/docapi.js"></script>
@@ -16,6 +17,8 @@
   <script type="text/javascript" src="../js/materialIndex.js"></script>
   <script type="text/javascript" src="../js/materialTools.js"></script>
   <script type="text/javascript" src="../js/chatToolLoop.js"></script>
+  <script type="text/javascript" src="../js/contextKernel.js"></script>
+  <script type="text/javascript" src="../js/qualityKernel.js"></script>
   <script type="text/javascript" src="../js/projAside.js"></script>
   <script type="text/javascript" src="../js/taskpane.js"></script>
   <script type="text/javascript">
@@ -101,12 +104,14 @@
           </label>
         </div>
         <div class="ai-cite-bar" id="aiCiteBar" hidden></div>
+        <div class="ai-style-bar" id="aiStyleBar" hidden aria-label="风格参照稿"></div>
+        <div class="ai-quality-bar" id="aiQualityBar" hidden aria-label="交稿闸"></div>
         <div class="ai-read-bar" id="aiReadBar" hidden aria-label="已读材料"></div>
         <div class="ai-level-row" id="aiWriteLevels" hidden aria-label="产出层级">
-          <button type="button" class="ai-level" data-write-level="h1" title="一级标题 ##">一级标题</button>
-          <button type="button" class="ai-level" data-write-level="h2" title="二级标题 ###">二级标题</button>
-          <button type="button" class="ai-level" data-write-level="h3" title="三级标题 ####">三级标题</button>
-          <button type="button" class="ai-level" data-write-level="body" title="标题下正文段落">正文</button>
+          <button type="button" class="ai-level" data-write-level="h1" title="一级标题">一级标题</button>
+          <button type="button" class="ai-level" data-write-level="h2" title="二级标题">二级标题</button>
+          <button type="button" class="ai-level" data-write-level="h3" title="三级标题">三级标题</button>
+          <button type="button" class="ai-level" data-write-level="body" title="标题下正文">正文</button>
         </div>
         <div class="ai-suite-presets" id="aiSuitePresets" hidden>
           <button type="button" data-suite-preset="请按现有标题充填事实与表述。写数、写事须以「素材」及已引用文件为依据；表述详略可参考「模板」。无依据处标「待核实」，禁止编造数字、单位与结论。">充填</button>
@@ -119,13 +124,13 @@
         </div>
         <textarea class="ai-req" id="aiReq" rows="3" placeholder="补充要求，如组数、侧重…"></textarea>
         <div class="ai-toolbar">
-          <label class="ai-chat-auth" id="aiWantDraftWrap" title="勾选后出可落点的结论；勾选时会自动勾上「给多份」">
-            <input type="checkbox" id="aiWantDraft" />
+          <label class="ai-chat-auth" id="aiWantDraftWrap" title="勾选后出可落点的结论；勾选时会自动勾上「多份」">
+            <input type="checkbox" id="aiWantDraft" checked />
             <span>出结论</span>
           </label>
           <label class="ai-chat-auth" id="aiWantVariantsWrap" title="勾选后出多组参考；卡片上选落点写入">
-            <input type="checkbox" id="aiWantVariants" />
-            <span>给多份</span>
+            <input type="checkbox" id="aiWantVariants" checked />
+            <span>多份</span>
           </label>
           <span class="ai-suite-hint" id="aiSuiteHint" hidden>精修：钉住选区后改写选定</span>
           <button type="button" id="aiClearChat">清空</button>

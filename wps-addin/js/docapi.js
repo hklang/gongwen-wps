@@ -282,6 +282,7 @@
 
   /**
    * 分类一行 md（与 md2docx 对齐）。skip=空行/--- 不落段。
+   * 字体层级以 # 个数为准，不按「一、」「（一）」改判；井号错了是模型问题。
    */
   function classifyMdLine(line) {
     var t = String(line == null ? "" : line)
@@ -382,7 +383,7 @@
         indentChars: 2
       };
 
-    /* 无井号时按公文序号兜底：一、→一级；（一）→二级 */
+    /* 无井号时才按公文序号兜底：一、→一级；（一）→二级 */
     var gw = gongwenLevel(t);
     if (gw === 1)
       return {
@@ -847,8 +848,51 @@
       text: getSelectionText(),
       start: a,
       end: b,
+      endsWithPara: true,
       info: getSelectionInfo()
     };
+  }
+
+  /**
+   * 钉在标题上写下级：有下属内容则覆盖下属（不动标题行）；无下属则在标题后插入。
+   * 避免「选定」把一级黑体一并盖成楷体/宋体。
+   */
+  function writeUnderCurrentHeading(text) {
+    ensureGongwenDocChrome();
+    var s = selection();
+    var p0 = s.Paragraphs.Item(1);
+    var h0 = headingInfo(p0);
+    if (!h0.via) throw new Error("光标不在标题上");
+    var startIdx = indexOfParagraph(p0);
+    if (!startIdx) throw new Error("找不到当前段落");
+    var paras = doc().Paragraphs;
+    var n = paras.Count;
+    var endIdx = startIdx;
+    var j;
+    for (j = startIdx + 1; j <= n; j++) {
+      var hj = headingInfo(paras.Item(j));
+      if (hj.via && hj.lvl <= h0.lvl) break;
+      endIdx = j;
+    }
+    if (endIdx > startIdx) {
+      var a = paras.Item(startIdx + 1).Range.Start;
+      var b = paras.Item(endIdx).Range.End;
+      try {
+        if (b > a + 1) b = b - 1;
+      } catch (e) {}
+      selectRange(a, b);
+      return replaceSelection(text, { endsWithPara: true });
+    }
+    var ins = paras.Item(startIdx).Range.End;
+    try {
+      if (ins > paras.Item(startIdx).Range.Start) ins = ins - 1;
+    } catch (e2) {}
+    selectRange(ins, ins);
+    try {
+      s.TypeParagraph();
+    } catch (eP) {}
+    typeLinesStyled(splitWriteLines(text));
+    return true;
   }
 
   /**
@@ -975,6 +1019,7 @@
     listHeadings: listHeadings,
     listSiblingHeadings: listSiblingHeadings,
     selectHeadingBody: selectHeadingBody,
+    writeUnderCurrentHeading: writeUnderCurrentHeading,
     selectHeadingSection: selectHeadingSection,
     selectSiblingHeadings: selectSiblingHeadings,
     selectSiblingHeadingsByIndex: selectSiblingHeadingsByIndex,

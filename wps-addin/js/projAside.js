@@ -269,6 +269,7 @@
     menu.innerHTML =
       '<button type="button" data-file-open>用 WPS 打开</button>' +
       '<button type="button" data-file-cite>引用</button>' +
+      '<button type="button" data-file-style>设为参照稿</button>' +
       '<button type="button" data-file-del>删除</button>';
     var pathRel = GwProject.normRel(rel);
     state.fileCtxRel = pathRel;
@@ -290,12 +291,22 @@
         if (!c.ok) setStatus(c.error || "引用失败", "err");
         else if (c.exists) setStatus("已在引用：" + shortName(pathRel), "");
         else setStatus("已引用：" + shortName(pathRel), "ok");
+      } else if (act === "style") {
+        var s = GwProject.setStyleRef(pathRel);
+        if (!s.ok) setStatus(s.error || "设参照失败", "err");
+        else setStatus("已设参照稿：" + shortName(pathRel) + " · 学口气不照抄", "ok");
       } else if (act === "del") {
         if (!window.confirm("删除工程内文件？\n" + pathRel)) return;
         var d = GwProject.deleteRel(pathRel);
         if (!d.ok) setStatus(d.error || "删除失败", "err");
         else {
           GwProject.removeCite(pathRel);
+          if (
+            GwProject.getStyleRefRel &&
+            GwProject.getStyleRefRel() === pathRel
+          ) {
+            GwProject.clearStyleRef();
+          }
           renderProjectFiles(true);
           setStatus("已删除：" + shortName(pathRel), "warn");
         }
@@ -309,6 +320,11 @@
     menu.querySelectorAll("[data-file-cite]").forEach(function (btn) {
       btn.onclick = function (e) {
         runAct("cite", e);
+      };
+    });
+    menu.querySelectorAll("[data-file-style]").forEach(function (btn) {
+      btn.onclick = function (e) {
+        runAct("style", e);
       };
     });
     menu.querySelectorAll("[data-file-del]").forEach(function (btn) {

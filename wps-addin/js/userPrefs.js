@@ -130,18 +130,17 @@
     }
   }
 
-  /** 独立窗：持续记位置；主窗最小化则关门并打「待重开」标记。
-   * opts.docked=true：TaskPane 停靠，只记宽不关窗（原生跟主窗）。
+  /** 独立窗：持续记位置。
+   * 不再因主窗最小化而关闭助手窗（关窗会丢内存态；对话须保留）。
+   * opts.docked=true：TaskPane 停靠，只记宽（原生跟主窗）。
    */
   function watchWindow(which, opts) {
     opts = opts || {};
     var docked = !!opts.docked;
     var last = "";
-    var lastMin = null;
-    var closing = false;
 
     function persist() {
-      if (closing || (!docked && isHostMinimized())) return;
+      if (!docked && isHostMinimized()) return;
       var g = readWindowGeom();
       if (!g) return;
       var sig = g.w + "," + g.h + "," + g.left + "," + g.top;
@@ -150,37 +149,22 @@
       saveGeom(which, g);
     }
 
-    function onHostState() {
-      if (docked) return;
-      var min = isHostMinimized();
-      if (min === lastMin) return;
-      lastMin = min;
-      if (!min) return;
-      persist();
-      setWantOpen(which, true);
-      setWantOpen("workspace", true);
-      closing = true;
-      setTimeout(function () {
-        try {
-          global.close();
-        } catch (e) {
-          try {
-            window.close();
-          } catch (e2) {}
-        }
-      }, 80);
-    }
-
     setInterval(persist, 600);
-    if (!docked) setInterval(onHostState, 280);
     global.addEventListener("beforeunload", function () {
-      if (!closing) persist();
+      persist();
+      try {
+        if (global.GwLog)
+          global.GwLog.info("ui.beforeunload", { which: which });
+      } catch (eBu) {}
     });
     global.addEventListener("pagehide", function () {
-      if (!closing) persist();
+      persist();
+      try {
+        if (global.GwLog)
+          global.GwLog.info("ui.pagehide", { which: which });
+      } catch (ePh) {}
     });
     setTimeout(persist, 350);
-    if (!docked) setTimeout(onHostState, 100);
   }
 
   global.GwUserPrefs = {

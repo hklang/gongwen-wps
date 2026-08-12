@@ -1260,9 +1260,20 @@ def chat(
             '{"id":"B","note":"…","md":"…"},{"id":"C","note":"…","md":"…"}]}'
             "硬性规则："
             "1) edit 必须为 null；options 至少 2 组，默认 3 组，最多 5 组；"
-            "2) 每组 md 必须含点选层级的标题行（## / ### 等），对仗句式优先（前半后半都要有区分度）；"
+            "2) 严格遵守用户消息里【宿主约束】的井号层级："
+            "点选一级时：先 # 材料大标题一行，再 ## 一、二、三…；"
+            "##=一级（黑体）、###=二级（楷体加黑）、####=三级；"
+            "单个 # 只作文首大标题，禁止用单个 # 冒充章节「一、二、三」；"
+            "未点选的层级禁止出现；若宿主要求只出二级，禁止再写 ## 一级行；"
+            "对仗句式优先（前半后半都要有区分度）；"
             "3) 严禁【待补】空壳占位模板；无依据处标【待核实】或不写数字；"
             "4) 紧贴用户给出的「第一点/第二点…」结构与钉住范围；举例项（如「包含…」）不得压过主干意图；"
+            "4b) 本轮用户改架构/条目形态优先于历史旧表述与底稿；禁止只在 reply 空口应承「已给出」却不交 options；"
+            "4c) 必须遵守用户消息中的【本轮焦点说明】与分层标签（L1任务/L3焦点）："
+            "intent=lead 时须统领任务卡全文框架，禁止只围着标题底稿一节写冒段；"
+            "intent=outline 时焦点在当前标题/底稿，勿强行重开未点选的其它大块；"
+            "4d) 若有【写前对齐】：按意图/证据/风格/风险内部对齐后再写；"
+            "无精读材料禁止编造数字；勿输出长思考过程；禁止【待补】空壳；"
             "5) 禁止声称已写入；reply 一两句即可。"
         )
     elif allow_edit and _host_forbids_local_scaffold(msg):
@@ -1275,6 +1286,8 @@ def chat(
             "1) edit.md 必须是可落稿 Markdown，禁止只在 reply 描述；"
             "2) 严禁【待补】空壳占位；无依据处标【待核实】或不写数字；"
             "3) 紧贴用户结构与钉住范围；对仗标题前半后半都要有区分度；"
+            "3b) 遵守【本轮焦点说明】：lead=统领全文；outline=打磨当前标题；勿选错层；"
+            "3c) 若有【写前对齐】：按意图/证据/风格对齐；无材料不编数；勿输出长思考；"
             "4) 禁止声称已写入；reply 一两句即可。"
         )
     elif allow_edit:
@@ -1425,6 +1438,37 @@ def chat(
         parsed = _parse_chat_edit_response(raw)
         options = parsed.get("options")
         edit = parsed.get("edit")
+        # 给多份却只回散文：强提示重试 1 次（仍禁止本地骨架顶替）
+        if _wants_options_payload(msg) and not options:
+            retry_msgs = list(messages) + [
+                {"role": "assistant", "content": (raw or "")[:8000]},
+                {
+                    "role": "user",
+                    "content": (
+                        "上轮未给出合法 options。请立刻只输出一个 JSON 对象（禁止代码围栏、禁止只在 reply 描述）："
+                        '{"reply":"一两句","edit":null,'
+                        '"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"},'
+                        '{"id":"B","note":"…","md":"…"},{"id":"C","note":"…","md":"…"}]}'
+                        "硬性：options 至少 2 组；md 必须含点选层级对应井号标题行；"
+                        "若用户本轮要求改架构/条目形态，按本轮要求出，勿锁死旧底稿结构。"
+                    ),
+                },
+            ]
+            out2 = _chat_ex(
+                retry_msgs,
+                temperature=0.2,
+                provider=provider,
+                model=model,
+                tools=None,
+            )
+            raw2 = str(out2.get("content") or "")
+            if raw2 and not out2.get("tool_calls"):
+                parsed2 = _parse_chat_edit_response(raw2)
+                if parsed2.get("options"):
+                    parsed = parsed2
+                    options = parsed2.get("options")
+                    edit = None
+                    raw = raw2
         if (
             not options
             and not (edit and edit.get("md"))

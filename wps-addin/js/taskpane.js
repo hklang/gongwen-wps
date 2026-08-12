@@ -14,7 +14,20 @@
     previewId: null,
     adoptedId: null,
     optView: "diff",
-    suiteBaseline: ""
+    suiteBaseline: "",
+    /** 本会话已精读路径（跨次发送保留，对齐规格 read_set） */
+    readSet: [],
+    /** 风格参照指纹缓存 */
+    styleFp: null,
+    styleRefText: "",
+    /** 撰写续改底稿：对话卡 mi:vi；空则回落最近一张结论卡 */
+    baseDraft: null,
+    /** Context Kernel · Task Card */
+    taskCard: null,
+    /** 待澄清：{ options, asks } */
+    pendingClarify: null,
+    /** 本轮理解 · 状态条展示 */
+    lastUnderstand: null
   };
 
   function $(id) {
@@ -26,6 +39,371 @@
     if (el) {
       el.hidden = !msg;
       el.textContent = msg || "";
+    }
+  }
+
+  function statusIntentLabel(intent) {
+    return (
+      {
+        lead: "冒段",
+        outline: "标题",
+        revise_outline: "改架构",
+        body: "正文",
+        chat: "聊天",
+        ambiguous: "待确认",
+        suite: "精修"
+      }[intent] || "撰写"
+    );
+  }
+
+  /** 本轮对齐/写前对齐 → 下方状态条（联合聪明程度，不刷长思考） */
+  function paintUnderstandBar(classified, assembled, align) {
+    classified = classified || {};
+    assembled = assembled || {};
+    var intent = classified.intent || "";
+    var short;
+    var line;
+    if (align && align.tipLine) {
+      short = align.short || statusIntentLabel(intent);
+      line = align.tipLine;
+      state.lastUnderstand = {
+        short: short,
+        line: line,
+        intent: intent,
+        align: align.trace || null
+      };
+    } else {
+      var layers = (assembled.trace && assembled.trace.layers) || [];
+      var layerHint = "本轮话";
+      if (
+        layers.indexOf("L1") >= 0 &&
+        (layers.indexOf("L3") >= 0 || layers.indexOf("L3toc") >= 0)
+      )
+        layerHint = "任务+底稿";
+      else if (layers.indexOf("L1") >= 0) layerHint = "任务框架";
+      else if (layers.indexOf("L3toc") >= 0) layerHint = "目录对照";
+      else if (layers.indexOf("L3") >= 0) layerHint = "当前底稿";
+      else if (layers.indexOf("pin") >= 0) layerHint = "钉住范围";
+      short = statusIntentLabel(intent);
+      var detail = "";
+      if (classified.focusLine) {
+        detail = String(classified.focusLine)
+          .replace(/【本轮焦点说明】\s*/g, "")
+          .replace(/intent=\w+：?/g, "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 56);
+      }
+      line = detail
+        ? "理解：" + short + " · " + detail
+        : "理解：" + short + " · 用" + layerHint;
+      state.lastUnderstand = { short: short, line: line, intent: intent };
+    }
+    var st = $("aiEditStatus");
+    if (st) st.textContent = short;
+    tip(line);
+    logInfo("ctx.understand", state.lastUnderstand);
+    if (align && align.trace) logInfo("quality.align", align.trace);
+  }
+
+  function tipProgress(progress) {
+    var base =
+      (state.lastUnderstand && state.lastUnderstand.line) ||
+      (state.busy ? "发送中" : "");
+    tip(base ? base + " · " + progress : progress);
+  }
+
+  function escTip(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function buildAlignCardForSend(classified, assembled, mats, allow, displayMsg) {
+    if (!window.GwQualityKernel) return null;
+    var fp = state.styleFp && !state.styleFp.error ? state.styleFp : null;
+    return GwQualityKernel.buildAlignCard({
+      intent: (classified && classified.intent) || "",
+      layers: (assembled && assembled.trace && assembled.trace.layers) || [],
+      readSet: state.readSet || [],
+      materials: mats || [],
+      allowEdit: !!allow,
+      hasTaskCard: window.GwContextKernel
+        ? GwContextKernel.cardHasContent(state.taskCard)
+        : false,
+      hasBaseDraft: !!String(resolveBaseDraftMd() || "").replace(/\s/g, ""),
+      hasStyleRef: !!fp,
+      styleFingerprint: fp,
+      message: displayMsg || ""
+    });
+  }
+
+  function evidenceTextBundle() {
+    var parts = [];
+    try {
+      (citedMaterials() || []).forEach(function (m) {
+        if (m && (m.text || m.content)) parts.push(String(m.text || m.content));
+      });
+    } catch (e1) {}
+    try {
+      if (window.GwProject && GwProject.readTextRel) {
+        (state.readSet || []).forEach(function (p) {
+          var rd = GwProject.readTextRel(p);
+          if (rd && rd.ok && rd.text) parts.push(String(rd.text));
+        });
+      }
+    } catch (e2) {}
+    return parts.join("\n").slice(0, 24000);
+  }
+
+  function runDraftGate(md, classified) {
+    if (!window.GwQualityKernel) return null;
+    var chk = GwQualityKernel.draftCriticHost(md, {
+      readN: (state.readSet && state.readSet.length) || 0,
+      matN: (citedMaterials() || []).length,
+      refText: state.styleRefText || "",
+      evidenceText: evidenceTextBundle(),
+      intent: (classified && classified.intent) || "",
+      levels: selectedWriteLevels(),
+      hasStyleRef: !!(state.styleFp && !state.styleFp.error),
+      hasTaskCard: window.GwContextKernel
+        ? GwContextKernel.cardHasContent(state.taskCard)
+        : false
+    });
+    if (chk.tip) tip(chk.tip);
+    logInfo("quality.gate", {
+      pass: chk.pass,
+      n: (chk.issues && chk.issues.length) || 0,
+      issues: chk.issues
+    });
+    renderQualityBar(chk);
+    return chk;
+  }
+
+  function renderQualityBar(chk) {
+    var bar = $("aiQualityBar");
+    if (!bar) return;
+    if (!chk) {
+      bar.hidden = true;
+      bar.innerHTML = "";
+      return;
+    }
+    var items = (chk.checklist || [])
+      .map(function (c) {
+        return (
+          '<span class="ai-q-item' +
+          (c.ok ? " ok" : " bad") +
+          '" title="' +
+          escTip(c.label || "") +
+          '">' +
+          (c.ok ? "✓" : "!") +
+          " " +
+          escTip(String(c.label || "").slice(0, 18)) +
+          "</span>"
+        );
+      })
+      .join("");
+    bar.hidden = false;
+    bar.innerHTML =
+      '<div class="ai-q-head">' +
+      (chk.pass ? "交稿闸 · 通过" : "交稿闸 · 待处理") +
+      "</div>" +
+      '<div class="ai-q-list">' +
+      items +
+      "</div>" +
+      (chk.issues && chk.issues.length
+        ? '<div class="ai-q-msg">' +
+          escTip(chk.issues.slice(0, 3).join("；")) +
+          "</div>"
+        : "");
+  }
+
+  function runModelCritic(md, classified) {
+    if (!window.GwQualityKernel || !window.GwRelay) {
+      return Promise.resolve(null);
+    }
+    var prompt = GwQualityKernel.buildModelCriticPrompt(md, {
+      intent: (classified && classified.intent) || "",
+      levels: selectedWriteLevels(),
+      hasStyleRef: !!(state.styleFp && !state.styleFp.error)
+    });
+    return GwRelay.chat(prompt, "", "strong", false, null, {
+      force_final: true,
+      session_summary: "交稿挑刺·勿写稿"
+    }).then(function (data) {
+      var raw =
+        (data && data.reply) ||
+        (data && data.edit && data.edit.md) ||
+        "";
+      if (data && data.type === "tool_calls") {
+        return GwRelay.chat(
+          prompt + "\n\n（禁止工具，请直接输出挑刺 JSON）",
+          "",
+          "strong",
+          false,
+          null,
+          { force_final: true, session_summary: "交稿挑刺·勿写稿" }
+        ).then(function (d2) {
+          return GwQualityKernel.parseModelCritic((d2 && d2.reply) || "");
+        });
+      }
+      return GwQualityKernel.parseModelCritic(raw);
+    });
+  }
+
+  function refreshStyleFingerprint() {
+    state.styleFp = null;
+    state.styleRefText = "";
+    if (!window.GwProject || !GwProject.getStyleRefRel) return null;
+    var rel = GwProject.getStyleRefRel();
+    if (!rel) return null;
+    if (!window.GwQualityKernel) {
+      state.styleFp = {
+        path: rel,
+        title: GwProject.titleOf(GwProject.baseName(rel))
+      };
+      return state.styleFp;
+    }
+    var rd = GwProject.readTextRel(rel);
+    var title = GwProject.titleOf(GwProject.baseName(rel));
+    if (!rd || !rd.ok) {
+      state.styleFp = { path: rel, title: title, error: (rd && rd.error) || "读失败" };
+      tip("参照稿无法读取：" + ((rd && rd.error) || rel));
+      return state.styleFp;
+    }
+    state.styleRefText = String(rd.text || "").slice(0, 14000);
+    state.styleFp = GwQualityKernel.extractStyleFingerprint(state.styleRefText, {
+      path: rel,
+      title: title
+    });
+    logInfo("quality.style_ref", {
+      path: rel,
+      chars: state.styleFp.charCount,
+      headings: (state.styleFp.headings && state.styleFp.headings.length) || 0
+    });
+    return state.styleFp;
+  }
+
+  function renderStyleBar() {
+    var bar = $("aiStyleBar");
+    if (!bar || !window.GwProject || !GwProject.getStyleRefRel) return;
+    var rel = GwProject.getStyleRefRel();
+    if (!rel) {
+      bar.hidden = true;
+      bar.innerHTML = "";
+      return;
+    }
+    var name = citeShortName(rel);
+    bar.hidden = false;
+    bar.innerHTML =
+      '<span class="ai-style-chip" title="学口气与结构，不整篇抄袭">' +
+      '<span class="ai-style-tag">参照</span><span>' +
+      name +
+      '</span><button type="button" class="ai-style-x" data-style-x="1" title="取消参照">×</button></span>';
+  }
+
+  function logInfo(tag, d) {
+    try {
+      if (window.GwLog) GwLog.info(tag, d);
+    } catch (e) {}
+  }
+  function logWarn(tag, d) {
+    try {
+      if (window.GwLog) GwLog.warn(tag, d);
+    } catch (e) {}
+  }
+
+  var CHAT_STORE_KEY = "chat_snapshot_v1";
+
+  function slimChatForStore(list) {
+    return (list || []).slice(-50).map(function (m) {
+      var o = {
+        role: m.role,
+        text: String(m.text || "").slice(0, 12000)
+      };
+      if (m.editMd) o.editMd = String(m.editMd).slice(0, 8000);
+      if (m.variants && m.variants.length) {
+        o.variants = m.variants.slice(0, 5).map(function (v) {
+          return {
+            id: v.id,
+            note: v.note,
+            md: String(v.md || "").slice(0, 12000)
+          };
+        });
+      }
+      return o;
+    });
+  }
+
+  function persistChat(reason) {
+    if (!window.GwUserPrefs) return;
+    try {
+      var payload = {
+        v: 1,
+        savedAt: Date.now(),
+        reason: reason || "",
+        tab: state.tab,
+        chat: slimChatForStore(state.chat),
+        baseDraft: state.baseDraft || null,
+        taskCard: state.taskCard || null,
+        _clarifyAskedOnce: !!state._clarifyAskedOnce
+      };
+      GwUserPrefs.set(CHAT_STORE_KEY, JSON.stringify(payload));
+      logInfo("chat.persist", {
+        reason: reason || "",
+        n: state.chat.length,
+        bytes: String(GwUserPrefs.get(CHAT_STORE_KEY) || "").length
+      });
+    } catch (e) {
+      logWarn("chat.persist.fail", String(e && e.message ? e.message : e));
+    }
+  }
+
+  function restoreChat() {
+    if (!window.GwUserPrefs) return false;
+    try {
+      var raw = GwUserPrefs.get(CHAT_STORE_KEY);
+      if (!raw) {
+        logInfo("chat.restore.skip", "empty");
+        return false;
+      }
+      var data = JSON.parse(raw);
+      if (!data || !Array.isArray(data.chat) || !data.chat.length) {
+        logInfo("chat.restore.skip", "no_messages");
+        return false;
+      }
+      state.chat = data.chat;
+      if (
+        data.baseDraft &&
+        isFinite(data.baseDraft.mi) &&
+        isFinite(data.baseDraft.vi)
+      ) {
+        state.baseDraft = {
+          mi: data.baseDraft.mi | 0,
+          vi: data.baseDraft.vi | 0
+        };
+      }
+      if (window.GwContextKernel) {
+        state.taskCard = GwContextKernel.ensureCard(data.taskCard || null);
+      } else {
+        state.taskCard = data.taskCard || null;
+      }
+      /* 不恢复 pendingClarify，避免刷新后发送被静默拦住 */
+      state.pendingClarify = null;
+      state._clarifyAskedOnce = !!data._clarifyAskedOnce;
+      logInfo("chat.restore.ok", {
+        n: state.chat.length,
+        savedAt: data.savedAt,
+        reason: data.reason || "",
+        base: state.baseDraft,
+        hasCard: !!(state.taskCard && state.taskCard.rawPins)
+      });
+      return true;
+    } catch (e) {
+      logWarn("chat.restore.fail", String(e && e.message ? e.message : e));
+      return false;
     }
   }
 
@@ -80,6 +458,22 @@
     return parts.filter(Boolean).join("\n\n");
   }
 
+  /** 当前稿全文（有上限）；与钉住分工，不再把全文+引用糊进同一 context */
+  function currentDocMd() {
+    try {
+      return String(GwDoc.getDocumentText() || "").slice(0, 12000);
+    } catch (e) {
+      return "";
+    }
+  }
+
+  /** 本轮焦点：钉住优先，否则空（全文走 doc_md） */
+  function focusContextMd() {
+    var pin = workText();
+    if (pin.replace(/\s/g, "")) return pin.slice(0, 6000);
+    return "";
+  }
+
   function capability() {
     var el = $("aiCapability");
     return el && el.value === "strong" ? "strong" : "fast";
@@ -125,19 +519,49 @@
     var hasH3 = levels.indexOf("h3") >= 0;
     var hasBody = levels.indexOf("body") >= 0;
     parts.push("用户已点选产出层级：" + levels.join(",") + "。");
+    parts.push(
+      "Markdown 井号必须与点选层级严格一致：落稿按 # 个数套字体，井号多写/少写都会错。"
+    );
     parts.push("只输出点选的层级，未点选的层级禁止出现。");
-    if (hasH1) parts.push("一级：Markdown ## ，公文「一、二、三…」，措辞优先对仗。");
-    if (hasH2)
+    if (hasH1) {
       parts.push(
-        "二级：Markdown ### ，公文「（一）（二）…」。" +
-          "必须从钉住范围与用户要点中拆出具体子主题（如「包含/分管/要点」后的并列项），" +
-          "每一条 ### 对应一个具体对象或子题；禁止空泛套话（如只写压实责任、强化考核而无具体对象）；" +
-          "多组参考保持子主题集合一致，仅变换对仗措辞。"
+        "文题：options[].md / edit.md 开头必须有一行「# …」材料/本稿大标题（一个井号，宋体居中题名）。" +
+          "大标题优先取自钉住范围、当前文首、通知或引用素材中的正式题名；没有则据任务拟一个像公文的题名，禁止用「提纲」「参考」这类空题。"
       );
-    if (hasH3)
       parts.push(
-        "三级：Markdown #### 。须从上级要点继续拆具体条，禁止空泛套话。"
+        "一级：必须写成「## 一、…」「## 二、…」（两个井号）。" +
+          "禁止把一级写成单个 # 或 ###；措辞优先对仗（前半、后半都要有区分度）。" +
+          "有文题 # 后再写 ##，不要只有 ## 没有大标题。"
       );
+    }
+    if (hasH2) {
+      parts.push(
+        "二级：必须写成「### （一）…」「### （二）…」（三个井号）。" +
+          "禁止写成单个 # 或 ##；" +
+          "子主题必须服从【会话既定要求】与钉住一级的题意：" +
+          "用户已说的「第N点/大致思路」里的主干意图优先；其后「包含/比如…」只作举例，不得压过主干、另起炉灶；" +
+          "禁止抛开用户已定结构，仅凭素材目录另编无关条目（除非用户或钉住范围明确要求）；" +
+          "条数紧贴该一级下应有的子题，宜 2～5 条，勿凑满无关条目；" +
+          "多组参考子主题集合一致，仅变换对仗措辞。"
+      );
+      if (!hasH1) {
+        parts.push(
+          "本轮未点选一级：options[].md / edit.md 禁止出现任何「## 一、…」一级行，" +
+            "也禁止重复钉住范围内已有的一级标题原文；只输出 ### 二级行。" +
+            "钉住一级只表示研究范围，不是要你再输出那一行一级标题。"
+        );
+      }
+    }
+    if (hasH3) {
+      parts.push(
+        "三级：必须写成「#### …」（四个井号）。禁止用 # / ## / ### 冒充三级。"
+      );
+      if (!hasH1 && !hasH2) {
+        parts.push(
+          "本轮未点选一/二级：禁止输出 ## 或 ### 行；钉住上级只表示范围。"
+        );
+      }
+    }
     if (hasBody) parts.push("正文：标题下的事实与表述段落；无依据标【待核实】。");
     if (!hasBody && (hasH1 || hasH2 || hasH3)) {
       parts.push("本次只要标题骨架，少写长段正文。");
@@ -145,23 +569,71 @@
     if (!hasH1 && !hasH2 && !hasH3 && hasBody) {
       parts.push("本次只要正文段落，不要新增标题行。");
     }
+    parts.push(
+      "用户说「喜欢 xxxxxxxx,xxxxxxxx 句式」只约束措辞，不改变点选层级，未点选层仍禁止输出。"
+    );
+    if (!hasH1) {
+      parts.push(
+        "本轮未点选一级：章节标题不要用单个 #（单个 # 仅全文大标题，且仅在点选一级时输出）。"
+      );
+    } else {
+      parts.push(
+        "单个 # 仅用于文首大标题一行；一级章节一律用 ##，禁止再用单个 # 冒充「一、二、三」。"
+      );
+    }
     return parts.join("");
   }
 
   function pinnedScopeHint() {
     var t = workText();
     if (!t.replace(/\s/g, "")) return "";
-    return (
-      "用户已钉住研究范围，产出须紧贴该范围（可含其下应出现的子级），勿改动范围外其它同级块。\n【钉住范围】\n" +
-      t.slice(0, 6000)
-    );
+    var levels = selectedWriteLevels();
+    var childOnly =
+      levels.length &&
+      levels.indexOf("h1") < 0 &&
+      (levels.indexOf("h2") >= 0 || levels.indexOf("h3") >= 0);
+    var head =
+      "用户已钉住研究范围，产出须紧贴该范围（可含其下应出现的子级），勿改动范围外其它同级块。";
+    if (childOnly) {
+      head +=
+        "钉住内容是上级标题/范围，请在其下展开点选层级；不要把钉住的上级标题再写入 md。";
+    }
+    return head + "\n【钉住范围】\n" + t.slice(0, 6000);
   }
 
-  /** 上次由层级芯片自动填入的话术；用户改过则不再覆盖 */
+  /** 上次若把形态话术灌进输入框，点选变更时清掉，改由发送时静默携带 */
   var lastAutoLevelPrompt = "";
+
+  /** 形态话术不进对话框，发送时静默附上，避免模型不知要啥样 */
+  function levelShapeCarry(levels) {
+    if (!levels || !levels.length) return "";
+    var shape = composeWriteLevelPrompt(levels);
+    if (!shape) return "";
+    return "\n【产出形态】" + shape + "\n";
+  }
+
+  function syncWriteLevelPrompt() {
+    var req = $("aiReq");
+    if (!req) return;
+    var levels = selectedWriteLevels();
+    var cur = String(req.value || "");
+    /* 清掉旧版自动灌入的形态话术，输入框留给用户在对话里直接说 */
+    if (
+      cur &&
+      (cur === lastAutoLevelPrompt ||
+        cur === composeWriteLevelPrompt(levels))
+    ) {
+      req.value = "";
+      lastAutoLevelPrompt = "";
+    } else if (lastAutoLevelPrompt && cur === lastAutoLevelPrompt) {
+      req.value = "";
+      lastAutoLevelPrompt = "";
+    }
+  }
 
   /**
    * 按多选层级拼一条不冲突的默认话术（单一任务说明，不互相否定）。
+   * 不进输入框；发送时由 levelShapeCarry 静默附上。
    */
   function composeWriteLevelPrompt(levels) {
     if (!levels || !levels.length) return "";
@@ -188,30 +660,39 @@
 
     if (titles.length === 1 && titles[0] === "二级标题" && !has("h1")) {
       return (
-        "请给出二级标题（### （一）（二）…）。" +
-        scope +
-        "子主题须从钉住范围与要点中的并列项拆出，一条对应一个具体对象；" +
+        "请只给出二级标题，每行必须是「### （一）…」「### （二）…」（三个井号）。" +
+        (pinned
+          ? "已钉住一级范围：不要再输出「## 一、…」或重复钉住的一级标题；只在其下写 ###。"
+          : scope) +
+        "必须紧扣会话里用户已定的结构要点与该一级题意；" +
+        "「包含/比如…」是举例，不得压过主干；" +
+        "子主题从钉住范围与用户要点并列项拆出，一条对应一个具体对象；" +
+        "不要抛开用户要求去堆素材里的其它条目；" +
         (withBody
           ? "可在各二级下附简短正文要点；"
           : "只要二级标题骨架，少写长段；") +
-        "不要出现未点选的其它标题层级。"
+        "禁止单个 #，禁止 ##。对仗句式优先。"
       );
     }
     if (titles.length === 1 && titles[0] === "三级标题" && !has("h2") && !has("h1")) {
       return (
-        "请给出三级标题（####）。" +
-        scope +
+        "请只给出三级标题，每行必须是「#### …」（四个井号）。" +
+        (pinned
+          ? "已钉住上级范围：不要输出上级 ## / ### 行，只写 ####。"
+          : scope) +
         (withBody ? "可附简短正文要点；" : "只要三级标题骨架，少写长段；") +
-        "不要出现未点选的其它标题层级。"
+        "禁止用 # / ## / ### 冒充三级。"
       );
     }
     if (titles.length === 1 && titles[0] === "一级标题") {
       return (
-        "请给出一级标题（## 一、二、三…），措辞优先对仗。" +
+        "请给出可落稿骨架：先写一行材料大标题「# …」（一个井号），再写一级「## 一、…」「## 二、…」（两个井号），措辞优先对仗。" +
+        "大标题取自通知/素材/本稿题名，务求像正式公文文题。" +
         scope +
         (withBody
           ? "可在一级下附简短正文要点；"
-          : "只要一级标题骨架，不要二级/三级，少写长段；") +
+          : "只要文题+一级标题骨架，不要二级/三级，少写长段；") +
+        "禁止缺大标题；禁止用单个 # 写「一、二、三」；禁止 ### / ####。" +
         (withBody ? "未点选的更细标题层级不要出现。" : "")
       );
     }
@@ -229,17 +710,6 @@
     if (has("h3")) rule += "三级用 ####；";
     if (withBody) rule += "无依据标【待核实】。";
     return head + rule;
-  }
-
-  function syncWriteLevelPrompt() {
-    var req = $("aiReq");
-    if (!req) return;
-    var next = composeWriteLevelPrompt(selectedWriteLevels());
-    var cur = String(req.value || "");
-    if (!cur.trim() || cur === lastAutoLevelPrompt) {
-      req.value = next;
-      lastAutoLevelPrompt = next;
-    }
   }
 
   function ensureBase() {
@@ -465,6 +935,66 @@
     return out;
   }
 
+  function isHeadingLine(t) {
+    var s = String(t || "").replace(/^\s+/, "").replace(/\s+$/, "");
+    if (/^#{1,4}\s+\S/.test(s)) return true;
+    if (/^（[一二三四五六七八九十\d]+）\S/.test(s)) return true;
+    if (/^[一二三四五六七八九十]+、\S/.test(s) && s.length < 40) return true;
+    return false;
+  }
+
+  function normalizeHeadingLine(t) {
+    var s = String(t || "").replace(/^\s+/, "").replace(/\s+$/, "");
+    if (/^#{1,4}\s+\S/.test(s)) return s;
+    if (/^（[一二三四五六七八九十\d]+）\S/.test(s)) return "### " + s;
+    if (/^[一二三四五六七八九十]+、\S/.test(s) && s.length < 40)
+      return "## " + s;
+    return s;
+  }
+
+  /**
+   * 模型把多组标题写在 reply 散文里时：按标题块拆成多组（仍是模型原文，不本地编造）。
+   * 块之间用短说明行或空行+新标题簇分隔。
+   */
+  function extractHeadingGroupsFromReply(reply) {
+    var raw = stripHostChatMeta(reply || "");
+    var labeled = splitVariantsFromMd(raw);
+    if (labeled.length >= 2) return labeled;
+    var lines = raw.split(/\r?\n/);
+    var groups = [];
+    var cur = [];
+    function flush() {
+      if (cur.length >= 2) {
+        groups.push({
+          id: String.fromCharCode(65 + groups.length),
+          md: cur.join("\n\n"),
+          note: "从回复提取"
+        });
+      }
+      cur = [];
+    }
+    var i;
+    for (i = 0; i < lines.length; i++) {
+      var t = lines[i].replace(/^\s+/, "").replace(/\s+$/, "");
+      if (!t) continue;
+      if (isHeadingLine(t)) {
+        cur.push(normalizeHeadingLine(t));
+        continue;
+      }
+      if (cur.length) {
+        /* 短说明行视为组间注，结束本组 */
+        if (t.length <= 40 || /对仗|侧重|强调|突出|方案|参考/.test(t)) {
+          flush();
+        } else if (cur.length >= 2) {
+          flush();
+        }
+      }
+    }
+    flush();
+    if (groups.length >= 2) return groups;
+    return [];
+  }
+
   function extractWriteVariants(data, reply, editMd) {
     var list = [];
     var src =
@@ -492,6 +1022,7 @@
     }
     if (!list.length) list = splitVariantsFromMd(editMd || "");
     if (!list.length) list = splitVariantsFromMd(reply || "");
+    if (!list.length) list = extractHeadingGroupsFromReply(reply || "");
     return (list || []).filter(function (o) {
       return o && String(o.md || "").replace(/\s/g, "").length >= 20;
     });
@@ -523,6 +1054,80 @@
     var msg = state.chat[mi];
     if (!msg || !msg.variants || !msg.variants[vi]) return "";
     return String(msg.variants[vi].md || "");
+  }
+
+  function parseCardSrc(src) {
+    var parts = String(src || "").split(":");
+    var mi = parseInt(parts[0], 10);
+    var vi = parseInt(parts[1], 10);
+    if (!isFinite(mi) || !isFinite(vi) || mi < 0 || vi < 0) return null;
+    return { mi: mi, vi: vi };
+  }
+
+  function markBaseDraft(mi, vi, reason) {
+    if (
+      !state.chat[mi] ||
+      !state.chat[mi].variants ||
+      !state.chat[mi].variants[vi]
+    ) {
+      return;
+    }
+    state.baseDraft = { mi: mi, vi: vi };
+    logInfo("draft.base", { mi: mi, vi: vi, reason: reason || "" });
+  }
+
+  /** 当前续改底稿 md：优先用户点过的卡，否则最近助手结论卡第一张 */
+  function resolveBaseDraftMd() {
+    var b = state.baseDraft;
+    if (
+      b &&
+      state.chat[b.mi] &&
+      state.chat[b.mi].variants &&
+      state.chat[b.mi].variants[b.vi]
+    ) {
+      return String(state.chat[b.mi].variants[b.vi].md || "");
+    }
+    var i;
+    for (i = state.chat.length - 1; i >= 0; i--) {
+      var m = state.chat[i];
+      if (m && m.role === "assistant" && m.variants && m.variants.length) {
+        return String(m.variants[0].md || "");
+      }
+    }
+    return "";
+  }
+
+  function isBaseDraftCard(mi, vi) {
+    var b = state.baseDraft;
+    if (b && b.mi === mi && b.vi === vi) return true;
+    if (b) return false;
+    var j;
+    for (j = state.chat.length - 1; j >= 0; j--) {
+      var m = state.chat[j];
+      if (m && m.role === "assistant" && m.variants && m.variants.length) {
+        return j === mi && vi === 0;
+      }
+    }
+    return false;
+  }
+
+  /** @deprecated 由 Kernel.assembleWriteLayers 替代；保留兜底 */
+  function baseDraftConstraint() {
+    var md = resolveBaseDraftMd();
+    if (!String(md || "").replace(/\s/g, "")) return "";
+    return "\n【焦点·L3·当前结论底稿】\n" + String(md).slice(0, 10000) + "\n";
+  }
+
+  function handleCardApply(mode, src) {
+    var loc = parseCardSrc(src);
+    if (loc) markBaseDraft(loc.mi, loc.vi, "card_" + mode);
+    var md = resolveChatMd(src);
+    if (mode === "full") applyDraftFull(md);
+    else if (mode === "cursor") applyDraftCursor(md);
+    else if (mode === "sel") applyDraftSelection(md);
+    else if (mode === "copy") copyDocDraft(md);
+    else return;
+    renderOpts();
   }
 
   function saveVersionOrThrow() {
@@ -573,8 +1178,16 @@
     });
   }
 
+  function writeChildLevelsOnly() {
+    var levels = selectedWriteLevels();
+    if (!levels.length) return false;
+    if (levels.indexOf("h1") >= 0) return false;
+    return levels.indexOf("h2") >= 0 || levels.indexOf("h3") >= 0;
+  }
+
   function applyDraftSelection(md) {
-    /* 撰写已钉住：对准钉住范围；若钉在标题上则扩成「标题整块」再覆盖，避免留下旧要点 */
+    var childOnly = writeChildLevelsOnly();
+    /* 撰写已钉住：对准钉住范围；稿面原样写入，不改模型井号 */
     if (
       state.tab === "write" &&
       state.work &&
@@ -584,6 +1197,23 @@
       try {
         GwDoc.selectRange(state.work.start, state.work.end);
       } catch (ePin) {}
+      if (childOnly && GwDoc.writeUnderCurrentHeading) {
+        /* 钉上级写下级：落在标题之下，避免盖掉已有上级行 */
+        withVersionThenWrite(md, "写入标题下属", function (text) {
+          try {
+            GwDoc.writeUnderCurrentHeading(text);
+          } catch (eW) {
+            throw new Error(
+              (eW && eW.message) || "请钉在上级标题上再写下级"
+            );
+          }
+          if (state.tab === "write") {
+            state.work = null;
+            renderWorkChip();
+          }
+        });
+        return;
+      }
       try {
         var sec =
           GwDoc.selectHeadingSection && GwDoc.selectHeadingSection();
@@ -615,7 +1245,6 @@
       GwDoc.replaceSelection(text, {
         endsWithPara: !!info.endsWithPara
       });
-      /* 覆盖后旧钉失效，避免下次误盖 */
       if (state.tab === "write") {
         state.work = null;
         renderWorkChip();
@@ -640,14 +1269,6 @@
     } else {
       tip("当前环境不支持复制");
     }
-  }
-
-  function handleCardApply(mode, src) {
-    var md = resolveChatMd(src);
-    if (mode === "full") applyDraftFull(md);
-    else if (mode === "cursor") applyDraftCursor(md);
-    else if (mode === "sel") applyDraftSelection(md);
-    else if (mode === "copy") copyDocDraft(md);
   }
 
   /**
@@ -1027,6 +1648,7 @@
     $("aiCompose").hidden = tab === "proof";
     var levels = $("aiWriteLevels");
     if (levels) levels.hidden = tab !== "write";
+    if (typeof syncWriteLevelPrompt === "function") syncWriteLevelPrompt();
     $("aiSuitePresets").hidden = tab !== "suite";
     var expandWrap = $("aiExpandSibWrap");
     if (expandWrap) expandWrap.hidden = tab !== "suite";
@@ -1045,38 +1667,51 @@
     $("aiReq").placeholder =
       tab === "suite"
         ? "写精修要求，或点上方充填 / 润色…"
-        : wantVariantsChecked()
-          ? "已勾选给多份：可写组数、侧重…"
-          : wantDraftChecked()
-            ? "已勾选出结论：可写范围补充…"
-            : "纯聊天，或点选层级后勾选「出结论/给多份」…";
+        : wantVariantsChecked() || wantDraftChecked()
+          ? "在此说明要什么结构/侧重…（点选层级后发送）"
+            : "纯聊天，或点选层级后勾选「出结论/多份」…";
     $("aiSend").textContent =
-      tab === "suite" ? (state.options.length ? "再出" : "出方案") : "发送";
+      state.busy
+        ? state.tab === "suite"
+          ? "出方案中"
+          : "发送中"
+        : tab === "suite"
+          ? state.options.length
+            ? "再出"
+            : "出方案"
+          : "发送";
+    if ($("aiSend")) $("aiSend").disabled = false;
     var status = $("aiEditStatus");
     if (status) {
-      status.textContent =
-        tab === "suite"
-          ? state.previewId
-            ? "预览中"
-            : state.adoptedId
-              ? "已采用"
-              : "精修"
-          : lv.length
-            ? lv
-                .map(function (x) {
-                  return (
-                    { h1: "一级", h2: "二级", h3: "三级", body: "正文" }[x] ||
-                    x
-                  );
-                })
-                .join("+")
-            : wantVariantsChecked()
-              ? "给多份"
-              : wantDraftChecked()
-                ? "出结论"
-                : "纯聊天";
+      if (state.busy && state.lastUnderstand && state.lastUnderstand.short) {
+        status.textContent = state.lastUnderstand.short;
+      } else {
+        status.textContent =
+          tab === "suite"
+            ? state.previewId
+              ? "预览中"
+              : state.adoptedId
+                ? "已采用"
+                : "精修"
+            : lv.length
+              ? lv
+                  .map(function (x) {
+                    return (
+                      { h1: "一级", h2: "二级", h3: "三级", body: "正文" }[x] ||
+                      x
+                    );
+                  })
+                  .join("+")
+              : wantVariantsChecked()
+                ? "多份"
+                : wantDraftChecked()
+                  ? "出结论"
+                  : "纯聊天";
+      }
     }
-    if (tab === "suite" && state.options.length) {
+    if (state.busy && state.lastUnderstand && state.lastUnderstand.line) {
+      tip(state.lastUnderstand.line + " · 撰写中…");
+    } else if (tab === "suite" && state.options.length) {
       tip(
         state.previewId
           ? "预览中 · 可还原或采用"
@@ -1094,7 +1729,7 @@
               ? lv.length
                 ? "已选层级 · 钉住范围后发送；落点用选定/光标"
                 : "请先点选一级/二级/三级/正文"
-              : "点选层级并勾选「出结论」或「给多份」再要稿"
+              : "点选层级并勾选「出结论」或「多份」再要稿"
       );
     }
     syncRestoreBtn();
@@ -1257,7 +1892,7 @@
 
     if (!state.chat.length) {
       box.innerHTML =
-        '<div class="ai-empty">撰写：点选「一级/二级/三级/正文」（可多选）→ 需要时钉住范围 → 勾选「出结论/给多份」→ 发送。卡片上用选定或光标写入。</div>';
+        '<div class="ai-empty">撰写：点选「一级/二级/三级/正文」→ 在下方直接说要求 → 发送。形态说明会静默带给模型；卡片上用选定或光标写入。</div>';
       return;
     }
     var log = document.createElement("div");
@@ -1269,11 +1904,20 @@
       if (m.role === "assistant" && m.variants && m.variants.length) {
         m.variants.forEach(function (v, vi) {
           var card = document.createElement("div");
-          card.className = "ai-variant";
+          card.className =
+            "ai-variant" + (isBaseDraftCard(mi, vi) ? " is-base" : "");
           var head = document.createElement("div");
           head.className = "ai-variant-head";
-          head.textContent =
+          var title =
             (v.note && String(v.note)) || "参考 " + (v.id || vi + 1);
+          if (isBaseDraftCard(mi, vi)) {
+            head.innerHTML =
+              "<span>" +
+              escHtml(title) +
+              '</span><span class="ai-base-mark">底稿</span>';
+          } else {
+            head.textContent = title;
+          }
           var pre = document.createElement("pre");
           pre.className = "ai-variant-body";
           pre.textContent = v.md || "";
@@ -1331,8 +1975,63 @@
 
   function setBusy(on) {
     state.busy = !!on;
-    $("aiSend").disabled = !!on;
-    $("proofRun").disabled = !!on;
+    state.busyAt = on ? Date.now() : 0;
+    /* 不禁用发送按钮：禁用后像「点了没反应」；靠 busy 防重入即可 */
+    var sendBtn = $("aiSend");
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = on
+        ? state.tab === "suite"
+          ? "出方案中"
+          : "发送中"
+        : state.tab === "suite"
+          ? state.options && state.options.length
+            ? "再出"
+            : "出方案"
+          : "发送";
+    }
+    var proofBtn = $("proofRun");
+    if (proofBtn) proofBtn.disabled = !!on;
+  }
+
+  function releaseBusyIfStuck() {
+    if (!state.busy) return false;
+    var wait = state.busyAt ? Date.now() - state.busyAt : 0;
+    if (wait > 45000) {
+      setBusy(false);
+      tip("上次请求超时，已解锁，请再发一次");
+      logWarn("send.busy_timeout", { wait: wait });
+      return true;
+    }
+    return false;
+  }
+
+  function doSend() {
+    try {
+      releaseBusyIfStuck();
+      if (state.busy) {
+        var wait = state.busyAt ? Date.now() - state.busyAt : 0;
+        if (wait > 2500) {
+          setBusy(false);
+          tip("已强制解锁，正在重发…");
+        } else {
+          tip("仍在发送中，请稍候…");
+          return;
+        }
+      }
+      if (state._sendLockAt && Date.now() - state._sendLockAt < 600) {
+        return;
+      }
+      state._sendLockAt = Date.now();
+      if (state.tab === "proof") return;
+      if (state.tab === "suite") sendSuite();
+      else sendWrite();
+    } catch (e) {
+      setBusy(false);
+      var msg = (e && e.message) || String(e);
+      tip("发送异常：" + msg);
+      logWarn("send.crash", msg);
+    }
   }
 
   function withLogin(fn) {
@@ -1367,6 +2066,65 @@
     return contextWithCites(full);
   }
 
+  /** 去掉宿主追加提示，避免历史里被模型学舌、误判已出稿 */
+  function stripHostChatMeta(text) {
+    return String(text || "")
+      .replace(/\n*（以下\s*\d+\s*组参考[\s\S]*?）\s*/g, "\n")
+      .replace(/\n*（模型未给出[\s\S]*?）\s*/g, "\n")
+      .replace(/\n*（中转回了空壳[\s\S]*?）\s*/g, "\n")
+      .replace(/\n*（已拦截中转[\s\S]*?）\s*/g, "\n")
+      .replace(/\n*（用卡片按钮写入[\s\S]*?）\s*/g, "\n")
+      .replace(/\n*（已从回复提取[\s\S]*?）\s*/g, "\n")
+      .replace(/\n*（提示：本轮未成功精读[\s\S]*?）\s*/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  /** 发给中转的近期对话（软修剪） */
+  function chatHistoryForRelay() {
+    if (window.GwContextKernel && GwContextKernel.pruneHistory) {
+      return GwContextKernel.pruneHistory(state.chat || [], 10);
+    }
+    return (state.chat || [])
+      .slice(-16)
+      .map(function (m) {
+        return {
+          role: m.role === "assistant" ? "assistant" : "user",
+          content: String(m.text || "").slice(0, 2500)
+        };
+      })
+      .filter(function (m) {
+        return String(m.content || "").replace(/\s/g, "").length > 0;
+      });
+  }
+
+  /** 兼容：无 Kernel 时仍捞关键词句 */
+  function sessionFrameworkHint() {
+    if (window.GwContextKernel && state.taskCard) {
+      return GwContextKernel.renderTaskCard(state.taskCard);
+    }
+    var bits = [];
+    var i;
+    for (i = (state.chat || []).length - 1; i >= 0 && bits.length < 4; i--) {
+      var m = state.chat[i];
+      if (!m || m.role !== "user") continue;
+      var t = String(m.text || "");
+      if (
+        /第[一二三四五六七八九十\d]+点|大致思路|框架|提纲|分管|负责|包含|比如|对仗|句式|字数|通知/.test(
+          t
+        )
+      ) {
+        bits.unshift(t.slice(0, 1800));
+      }
+    }
+    if (!bits.length) return "";
+    return (
+      "\n【会话既定要求】以下是用户此前定下的结构/要点，本轮产出必须服从，不得抛开另编：\n" +
+      bits.join("\n---\n") +
+      "\n"
+    );
+  }
+
   function sendWrite() {
     var levels = selectedWriteLevels();
     var wantDraft = wantDraftChecked();
@@ -1381,189 +2139,454 @@
       tip("请先输入内容，或点选层级并勾选「出结论/给多份」");
       return;
     }
-    if (!msg && allow) {
-      msg = "请按已点选的产出层级给出结论。";
+    var displayMsg = msg;
+    if (!displayMsg && allow) {
+      displayMsg = "请按已点选的产出层级给出结论。";
     }
-    var ctx = docContextMd();
-    var mats = citedMaterials();
-    var pin = pinnedScopeHint();
+
+    if (!state.taskCard && window.GwContextKernel) {
+      state.taskCard = GwContextKernel.emptyCard();
+    }
+    if (window.GwContextKernel) {
+      state.taskCard = GwContextKernel.ingestUserMessage(
+        state.taskCard,
+        displayMsg
+      );
+    }
+
+    var forcedIntent = null;
+    if (state.pendingClarify && window.GwContextKernel) {
+      var chosen = GwContextKernel.parseClarifyChoice(
+        displayMsg,
+        state.pendingClarify.options
+      );
+      if (chosen) {
+        forcedIntent = chosen.intent;
+        logInfo("ctx.clarify.ok", { intent: forcedIntent });
+      } else {
+        logInfo("ctx.clarify.cancel", { reason: "user_continue" });
+      }
+      state.pendingClarify = null;
+    }
+
+    var classified = {
+      intent: "outline",
+      confidence: 0.7,
+      focusLine: "",
+      soft: false
+    };
+    if (window.GwContextKernel) {
+      classified = GwContextKernel.classify({
+        message: displayMsg,
+        levels: levels,
+        allowEdit: allow,
+        hasTaskCard: GwContextKernel.cardHasContent(state.taskCard),
+        hasBaseDraft: !!String(resolveBaseDraftMd() || "").replace(/\s/g, ""),
+        forcedIntent: forcedIntent
+      });
+    }
+
+    if (
+      classified.intent === "ambiguous" &&
+      allow &&
+      window.GwContextKernel &&
+      !state._clarifyAskedOnce
+    ) {
+      var ask = GwContextKernel.clarifyPrompt(classified.clarifyOptions);
+      state.pendingClarify = {
+        options: classified.clarifyOptions,
+        asks: 1
+      };
+      state._clarifyAskedOnce = true;
+      state.chat.push({ role: "user", text: displayMsg });
+      state.chat.push({ role: "assistant", text: ask });
+      persistChat("clarify");
+      logInfo("ctx.clarify", { options: classified.clarifyOptions });
+      $("aiReq").value = "";
+      renderOpts();
+      state.lastUnderstand = {
+        short: "待确认",
+        line: "理解：待确认 · 请回复 A 或 B",
+        intent: "ambiguous"
+      };
+      var stAsk = $("aiEditStatus");
+      if (stAsk) stAsk.textContent = "待确认";
+      tip(state.lastUnderstand.line);
+      return;
+    }
+    if (classified.intent === "ambiguous" && allow && window.GwContextKernel) {
+      var fb =
+        levels.indexOf("body") >= 0
+          ? "body"
+          : levels.length
+            ? "outline"
+            : "body";
+      classified = GwContextKernel.classify({
+        message: displayMsg,
+        levels: levels,
+        allowEdit: allow,
+        hasTaskCard: true,
+        hasBaseDraft: false,
+        forcedIntent: fb
+      });
+      state.pendingClarify = null;
+      logInfo("ctx.clarify.soft_fallback", { intent: classified.intent });
+    }
+
+    var assembled = { block: "", trace: {} };
+    var alignCard = null;
+    if (window.GwContextKernel) {
+      assembled = GwContextKernel.assembleWriteLayers({
+        intent: classified.intent,
+        confidence: classified.confidence,
+        soft: classified.soft,
+        focusLine: classified.focusLine,
+        taskCard: state.taskCard,
+        baseMd: allow ? resolveBaseDraftMd() : "",
+        pinHint: pinnedScopeHint(),
+        allowEdit: allow,
+        displayMsg: displayMsg
+      });
+      logInfo("ctx.trace", assembled.trace);
+    } else {
+      assembled.block =
+        sessionFrameworkHint() +
+        (allow ? baseDraftConstraint() : "") +
+        (pinnedScopeHint() ? pinnedScopeHint() + "\n" : "");
+    }
+    var matsEarly = citedMaterials();
+    refreshStyleFingerprint();
+    alignCard = buildAlignCardForSend(
+      classified,
+      assembled,
+      matsEarly,
+      allow,
+      displayMsg
+    );
+    if (alignCard && alignCard.promptBlock) assembled.block += alignCard.promptBlock;
+    paintUnderstandBar(classified, assembled, alignCard);
+
+    var ctx = focusContextMd();
+    var docMd = currentDocMd();
+    var mats = matsEarly;
     var levelRule = levels.length ? writeLevelConstraint(levels) : "";
-    var sendMsg = msg;
+    var shapeCarry = allow ? levelShapeCarry(levels) : "";
+    var hist = chatHistoryForRelay();
+    var ctxBlock = assembled.block;
+    var sessionSum = window.GwContextKernel
+      ? String(
+          (classified.focusLine || "") +
+            GwContextKernel.renderTaskCard(state.taskCard)
+        ).slice(0, 2000)
+      : sessionFrameworkHint().slice(0, 2000);
+    var sendMsg = displayMsg;
     if (wantVars) {
+      var markerHint = "含点选层级对应的标题行，井号个数必须正确";
+      if (levels.indexOf("h1") >= 0 && levels.indexOf("h2") < 0)
+        markerHint =
+          "先 # 大标题一行，再 ## 一、…（两井号）；禁止用 # 写章节；禁止 ###";
+      else if (levels.indexOf("h2") >= 0 && levels.indexOf("h1") < 0)
+        markerHint =
+          "每行二级必须是 ### （一）…（三井号）；禁止再写 ## 一级；禁止单个 #";
+      else if (levels.indexOf("h1") >= 0 && levels.indexOf("h2") >= 0)
+        markerHint =
+          "先 # 大标题，再一级 ##、二级 ###；禁止用单个 # 当「一、二、三」";
       sendMsg =
-        msg +
+        displayMsg +
+        shapeCarry +
+        ctxBlock +
         "\n\n【宿主约束】已勾选「给多份」。" +
         "必须输出 JSON：{reply, options:[{id,md,note},...]}，edit 必须为 null。" +
         "严禁空壳【待补】占位模板。" +
-        "每组 options[].md 必须是可落稿 Markdown（含 ##/### 标题行），禁止只在 reply 里用自然语言罗列标题。" +
+        "每组 options[].md 必须是可落稿 Markdown（" +
+        markerHint +
+        "）。井号错了整行字体都会错，请自检后再输出。" +
+        "禁止只在 reply 里用自然语言罗列标题。" +
+        "须遵守【本轮焦点说明】与分层标签；改架构必须交 options，禁止空口「已给出」。" +
         levelRule +
-        (pin ? pin + "\n" : "") +
         "默认 3 组（用户指定组数从其，最多 5）。每组 note 一句差异；reply 一两句；禁止声称已写入；无依据勿编造。";
     } else if (wantDraft) {
       sendMsg =
-        msg +
+        displayMsg +
+        shapeCarry +
+        ctxBlock +
         "\n\n【宿主约束】已勾选「出结论」。" +
         "输出一版：JSON 为 {reply, edit:{md}}；edit.md 必须是可落稿 Markdown，禁止只在 reply 描述。" +
-        "严禁空壳【待补】占位模板。" +
+        "严禁空壳【待补】占位模板。井号必须与点选层级一致（##=一级，###=二级，####=三级）；禁止用单个 # 当章节标题。" +
+        "须遵守【本轮焦点说明】与分层标签。" +
         levelRule +
-        (pin ? pin + "\n" : "") +
         "禁止声称已写入；无依据处标待核实。";
     } else {
       sendMsg =
-        msg +
+        displayMsg +
+        ctxBlock +
         "\n\n【宿主约束】未勾选「出结论/给多份」：纯聊天。" +
         "只用 reply；edit 与 options 必须为 null；禁止输出可落稿正文或空壳占位。" +
-        (pin ? pin + "\n" : "") +
         "可商量结构；要落稿时请点选层级并勾选后再出。";
     }
     withLogin(function () {
-      state.chat.push({ role: "user", text: msg });
-      $("aiReq").value = "";
-      renderOpts();
       setBusy(true);
-      tip(allow ? "撰写中…" : "聊天中…");
-      hideReadBar();
-      var runner =
-        window.GwChatLoop && GwChatLoop.runChat
-          ? GwChatLoop.runChat({
-              message: sendMsg,
-              contextMd: ctx,
-              capability: capability(),
-              allowEdit: allow,
-              materials: mats,
-              onStatus: function (s) {
-                var t = String(s || "");
-                if (/索引|同步/.test(t)) tip("正在准备材料…");
-                else if (/执行|read_file|list_files|search/.test(t))
-                  tip("正在查阅材料…");
-                else tip(allow ? "撰写中…" : "聊天中…");
+      tipProgress(allow ? "撰写中…" : "聊天中…");
+      try {
+        state.chat.push({ role: "user", text: displayMsg });
+        persistChat("user_send");
+        logInfo("chat.user", {
+          n: state.chat.length,
+          len: String(displayMsg || "").length,
+          levels: selectedWriteLevels(),
+          wantDraft: wantDraftChecked(),
+          wantVars: wantVariantsChecked(),
+          histN: hist.length,
+          intent: classified.intent,
+          confidence: classified.confidence
+        });
+        $("aiReq").value = "";
+        renderOpts();
+        hideReadBar();
+        var runner =
+          window.GwChatLoop && GwChatLoop.runChat
+            ? GwChatLoop.runChat({
+                message: sendMsg,
+                contextMd: ctx,
+                doc_md: docMd,
+                capability: capability(),
+                allowEdit: allow,
+                materials: mats,
+                history: hist,
+                session_summary: sessionSum,
+                read_set: (state.readSet || []).slice(),
+                onStatus: function (s) {
+                  var t = String(s || "");
+                  if (/索引|同步/.test(t)) tipProgress("正在准备材料…");
+                  else if (/执行|read_file|list_files|search/.test(t))
+                    tipProgress("正在查阅材料…");
+                  else tipProgress(allow ? "撰写中…" : "聊天中…");
+                }
+              })
+            : GwRelay.chat(sendMsg, ctx, capability(), allow, mats, {
+                history: hist,
+                session_summary: sessionSum,
+                doc_md: docMd,
+                read_set: (state.readSet || []).slice()
+              }).then(
+                function (data) {
+                  return {
+                    reply: (data && data.reply) || "(空回复)",
+                    edit: data && data.edit,
+                    options: data && data.options,
+                    read_set: data && data.read_set
+                  };
+                }
+              );
+        return runner
+          .then(function (data) {
+            if (data && Array.isArray(data.read_set) && data.read_set.length) {
+              data.read_set.forEach(function (p) {
+                if (p && state.readSet.indexOf(p) < 0) state.readSet.push(p);
+              });
+              logInfo("chat.read_set", { n: state.readSet.length });
+              if (alignCard) {
+                alignCard = buildAlignCardForSend(
+                  classified,
+                  assembled,
+                  mats,
+                  allow,
+                  displayMsg
+                );
+                if (alignCard) {
+                  state.lastUnderstand = {
+                    short: alignCard.short,
+                    line: alignCard.tipLine,
+                    intent: classified.intent,
+                    align: alignCard.trace
+                  };
+                }
               }
-            })
-          : GwRelay.chat(sendMsg, ctx, capability(), allow, mats).then(
-              function (data) {
-                return {
-                  reply: (data && data.reply) || "(空回复)",
-                  edit: data && data.edit,
-                  options: data && data.options
-                };
-              }
-            );
-      return runner
-        .then(function (data) {
-          var reply = (data && data.reply) || "(空回复)";
-          var editMd = allow ? normalizeEditMd(data && data.edit) : "";
-          if (allow && !editMd && window.GwMaterialTools) {
-            var parsed = GwMaterialTools.parseAgentPayload(reply, data);
-            if (parsed && parsed.edit) {
-              editMd = normalizeEditMd(parsed.edit);
-              if (parsed.reply) reply = parsed.reply;
             }
-          }
-          if (!allow) editMd = "";
-          if (
-            allow &&
-            editMd &&
-            isBlankSummaryScaffold(editMd) &&
-            !userAskedForScaffold(msg)
-          ) {
-            editMd = "";
-            reply =
-              "（已拦截中转误回的空壳占位稿。）\n\n请确认已点选产出层级，并勾选「出结论」或「给多份」后重发。";
-          }
-          var variants = [];
-          if (wantVars) {
-            variants = extractWriteVariants(data, reply, editMd);
+            var reply = (data && data.reply) || "(空回复)";
+            var editMd = allow ? normalizeEditMd(data && data.edit) : "";
+            if (allow && !editMd && window.GwMaterialTools) {
+              var parsed = GwMaterialTools.parseAgentPayload(reply, data);
+              if (parsed && parsed.edit) {
+                editMd = normalizeEditMd(parsed.edit);
+                if (parsed.reply) reply = parsed.reply;
+              }
+            }
+            if (!allow) editMd = "";
             if (
-              variants.length < 2 &&
-              (isBlankSummaryScaffold(editMd) ||
-                /已搭.*骨架/.test(reply || ""))
+              allow &&
+              editMd &&
+              isBlankSummaryScaffold(editMd) &&
+              !userAskedForScaffold(msg)
             ) {
               editMd = "";
+              reply =
+                "（已拦截中转误回的空壳占位稿。）\n\n请确认已点选产出层级，并勾选「出结论」或「给多份」后重发。";
             }
-            if (variants.length < 2) {
-              var sk = extractHeadingSkeletonFromReply(reply);
-              if (sk) {
-                variants = [{ id: "A", note: "从回复提取", md: sk }];
+            var variants = [];
+            if (wantVars) {
+              variants = extractWriteVariants(data, reply, editMd);
+              if (
+                variants.length < 2 &&
+                (isBlankSummaryScaffold(editMd) ||
+                  /已搭.*骨架/.test(reply || ""))
+              ) {
+                editMd = "";
+              }
+              if (variants.length < 2) {
+                var sk = extractHeadingSkeletonFromReply(reply);
+                if (sk) {
+                  variants = [{ id: "A", note: "从回复提取", md: sk }];
+                }
+              }
+              editMd = "";
+            } else if (wantDraft && editMd) {
+              variants = [{ id: "1", note: "结论稿", md: editMd }];
+              editMd = "";
+            } else if (wantDraft && !editMd) {
+              var sk1 = extractHeadingSkeletonFromReply(reply);
+              if (sk1) {
+                variants = [{ id: "1", note: "从回复提取", md: sk1 }];
+                reply =
+                  "（已从回复提取可落稿标题骨架。请用「选定」或「光标」写入。）";
               }
             }
-            /* 不再本地拼装多份稿：须由模型/中转给出 */
-            editMd = "";
-          } else if (wantDraft && editMd) {
-            variants = [
-              { id: "1", note: "结论稿", md: editMd }
-            ];
-            editMd = "";
-          } else if (wantDraft && !editMd) {
-            var sk1 = extractHeadingSkeletonFromReply(reply);
-            if (sk1) {
-              variants = [{ id: "1", note: "从回复提取", md: sk1 }];
-              reply =
-                "（已从回复提取可落稿标题骨架。请用「选定」或「光标」写入。）";
+            var bubble = {
+              role: "assistant",
+              text: reply,
+              editMd: "",
+              variants: variants
+            };
+            if (wantVars && variants.length >= 2) {
+              bubble.text =
+                reply +
+                (/\n/.test(reply) ? "\n\n" : "\n") +
+                "（以下 " +
+                variants.length +
+                " 组参考，用卡片「选定 / 光标 / 整篇」写入；已有正文时优先选定或光标）";
+              tip("已出 " + variants.length + " 组参考 · 卡片上直接落稿");
+            } else if (wantVars && variants.length === 1) {
+              tip("仅得 1 组 · 卡片上直接落稿");
+            } else if (wantVars && !variants.length) {
+              var scaffoldHit = /已搭.*骨架|【待补/.test(reply || "");
+              bubble.text =
+                reply +
+                "\n\n（" +
+                (scaffoldHit
+                  ? "中转回了空壳骨架或未带 options。请确认线上中转已更新后重发；本机不会用模板顶替。"
+                  : "模型未给出可用多份稿。请勾选「给多份」后重发；本机不会用模板顶替。") +
+                "）";
+              tip(scaffoldHit ? "中转空壳骨架已拒收" : "模型未给出多份稿");
+            } else if (wantDraft && !variants.length) {
+              bubble.text =
+                reply +
+                "\n\n（模型未给出可落稿结论，请勾选「出结论」后重发；本机不会用模板顶替。）";
+              tip("模型未给出结论稿");
+            } else if (wantDraft && variants.length) {
+              bubble.text =
+                reply +
+                (/\n/.test(reply) ? "\n\n" : "\n") +
+                "（用卡片按钮写入；每次先存版本）";
+              tip("结论已出 · 卡片上点小按钮写入");
+            } else {
+              tip("完成");
             }
-          }
-          var bubble = {
-            role: "assistant",
-            text: reply,
-            editMd: "",
-            variants: variants
-          };
-          if (wantVars && variants.length >= 2) {
-            bubble.text =
-              reply +
-              (/\n/.test(reply) ? "\n\n" : "\n") +
-              "（以下 " +
-              variants.length +
-              " 组参考，用卡片「选定 / 光标 / 整篇」写入；已有正文时优先选定或光标）";
-            tip("已出 " + variants.length + " 组参考 · 卡片上直接落稿");
-          } else if (wantVars && variants.length === 1) {
-            tip("仅得 1 组 · 卡片上直接落稿");
-          } else if (wantVars && !variants.length) {
-            var scaffoldHit = /已搭.*骨架|【待补/.test(reply || "");
-            bubble.text =
-              reply +
-              "\n\n（" +
-              (scaffoldHit
-                ? "中转回了空壳骨架或未带 options。请确认线上中转已更新后重发；本机不会用模板顶替。"
-                : "模型未给出可用多份稿。请勾选「给多份」后重发；本机不会用模板顶替。") +
-              "）";
-            tip(scaffoldHit ? "中转空壳骨架已拒收" : "模型未给出多份稿");
-          } else if (wantDraft && !variants.length) {
-            bubble.text =
-              reply +
-              "\n\n（模型未给出可落稿结论，请勾选「出结论」后重发；本机不会用模板顶替。）";
-            tip("模型未给出结论稿");
-          } else if (wantDraft && variants.length) {
-            bubble.text =
-              reply +
-              (/\n/.test(reply) ? "\n\n" : "\n") +
-              "（用卡片按钮写入；每次先存版本）";
-            tip("结论已出 · 卡片上点小按钮写入");
-          } else {
-            tip("完成");
-          }
-          state.chat.push(bubble);
-          renderOpts();
-          syncTabUi();
-        })
-        .catch(function (e) {
-          var err =
-            (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
-            e.message ||
-            "失败";
-          tip(err);
-          state.chat.push({
-            role: "assistant",
-            text:
-              "失败：" +
-              err +
-              "\n\n（中转不可用时不再本地拼装提纲，请恢复中转后重发，由模型生成。）"
+            var checkMd = "";
+            if (variants && variants.length) {
+              checkMd = variants
+                .map(function (v) {
+                  return v.md || "";
+                })
+                .join("\n");
+            } else if (editMd) checkMd = editMd;
+            else checkMd = reply;
+            state.chat.push(bubble);
+            if (allow && bubble.variants && bubble.variants.length) {
+              markBaseDraft(state.chat.length - 1, 0, "new_variants");
+            }
+            persistChat("assistant_ok");
+            logInfo("chat.assistant", {
+              n: state.chat.length,
+              variants: (bubble.variants && bubble.variants.length) || 0,
+              replyLen: String(bubble.text || "").length,
+              base: state.baseDraft
+            });
+            renderOpts();
+            syncTabUi();
+            var qchk = runDraftGate(checkMd, classified);
+            if (qchk && qchk.bubbleNote) {
+              bubble.text =
+                String(bubble.text || "") +
+                (/\n/.test(bubble.text) ? "\n\n" : "\n") +
+                qchk.bubbleNote;
+              state.chat[state.chat.length - 1] = bubble;
+              persistChat("assistant_quality");
+              renderOpts();
+            }
+            if (capability() !== "strong" || !allow || !checkMd) return null;
+            tip(
+              ((state.lastUnderstand && state.lastUnderstand.line) ||
+                "对齐") + " · 交稿深检…"
+            );
+            return runModelCritic(checkMd, classified)
+              .then(function (modelChk) {
+                if (!modelChk) return;
+                var merged = GwQualityKernel.mergeCritic(qchk, modelChk);
+                renderQualityBar(merged);
+                tip(merged.tip);
+                if (modelChk.bubbleNote && modelChk.issues && modelChk.issues.length) {
+                  bubble.text =
+                    String(bubble.text || "") +
+                    (/\n/.test(bubble.text) ? "\n" : "\n") +
+                    modelChk.bubbleNote;
+                  state.chat[state.chat.length - 1] = bubble;
+                  persistChat("assistant_critic");
+                  renderOpts();
+                }
+                logInfo("quality.critic", {
+                  pass: modelChk.pass,
+                  n: (modelChk.issues && modelChk.issues.length) || 0
+                });
+              })
+              .catch(function (eC) {
+                logWarn(
+                  "quality.critic.fail",
+                  String((eC && eC.message) || eC)
+                );
+              });
+          })
+          .catch(function (e) {
+            var err =
+              (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
+              e.message ||
+              "失败";
+            tip(err);
+            logWarn("chat.fail", err);
+            state.chat.push({
+              role: "assistant",
+              text:
+                "失败：" +
+                err +
+                "\n\n（中转不可用时不再本地拼装提纲，请恢复中转后重发，由模型生成。）"
+            });
+            persistChat("assistant_fail");
+            renderOpts();
+          })
+          .then(function () {
+            setBusy(false);
           });
-          renderOpts();
-        })
-        .then(function () {
-          setBusy(false);
-        });
-    }).catch(function () {});
+      } catch (errInner) {
+        setBusy(false);
+        tip("发送异常：" + ((errInner && errInner.message) || errInner));
+        logWarn("send.inner", String(errInner && errInner.message));
+        return Promise.resolve();
+      }
+    }).catch(function (e) {
+      setBusy(false);
+      var m = (e && e.message) || "请先登录后再发送";
+      tip(m);
+      logWarn("send.login", m);
+    });
   }
 
   function sendSuite() {
@@ -1679,18 +2702,44 @@
   }
 
   function switchTab(tab) {
+    var prev = state.tab;
     state.tab = tab;
     if (tab === "proof") {
       state.proof = [];
     }
+    logInfo("ui.tab", { from: prev, to: tab, chatN: state.chat.length });
     syncTabUi();
   }
 
   window.onload = function () {
+    logInfo("ui.onload", {
+      href: String(location.href || ""),
+      base: (window.GwRelay && GwRelay.baseUrl && GwRelay.baseUrl()) || ""
+    });
     ensureBase();
+    setBusy(false);
+    state.pendingClarify = null;
     if (window.GwAccount) GwAccount.init();
+    try {
+      if (restoreChat()) {
+        tip("已恢复上次对话 " + state.chat.length + " 条");
+      }
+    } catch (eRestore) {
+      logWarn("chat.restore.crash", String(eRestore && eRestore.message));
+    }
     syncTabUi();
     startLiveWatch();
+
+    window.addEventListener("beforeunload", function () {
+      persistChat("beforeunload");
+    });
+    window.addEventListener("pagehide", function () {
+      persistChat("pagehide");
+    });
+    /* 定时落盘，防最小化关窗来不及写 beforeunload */
+    setInterval(function () {
+      if (state.chat && state.chat.length) persistChat("interval");
+    }, 8000);
 
     $("aiTabWrite").onclick = function () {
       switchTab("write");
@@ -1791,10 +2840,25 @@
       }
     );
 
-    $("aiSend").onclick = function () {
-      if (state.tab === "suite") sendSuite();
-      else sendWrite();
-    };
+    var sendBtn = $("aiSend");
+    if (sendBtn) {
+      sendBtn.onclick = function () {
+        doSend();
+      };
+    }
+    var reqEl = $("aiReq");
+    if (reqEl) {
+      reqEl.addEventListener("keydown", function (ev) {
+        var key = ev.key || "";
+        var code = ev.keyCode || ev.which;
+        var isEnter = key === "Enter" || code === 13;
+        if (!isEnter || ev.shiftKey || ev.ctrlKey || ev.altKey || ev.metaKey)
+          return;
+        if (ev.isComposing || code === 229) return;
+        ev.preventDefault();
+        doSend();
+      });
+    }
     var wantDraft = $("aiWantDraft");
     if (wantDraft) {
       wantDraft.onchange = function () {
@@ -1817,17 +2881,45 @@
       };
     }
     $("aiClearChat").onclick = function () {
+      logWarn("chat.clear", {
+        n: state.chat.length,
+        stack: "user_click_aiClearChat"
+      });
       /* 铁律：清空对话绝不碰 ActiveDocument */
       state.chat = [];
       state.options = [];
       state.previewId = null;
       state.adoptedId = null;
       state.suiteBaseline = "";
+      state.readSet = [];
+      state.baseDraft = null;
+      state.taskCard = window.GwContextKernel
+        ? GwContextKernel.emptyCard()
+        : null;
+      state.pendingClarify = null;
+      state._clarifyAskedOnce = false;
+      state.lastUnderstand = null;
+      persistChat("user_clear");
       syncRestoreBtn();
       renderOpts();
       syncTabUi();
+      var qBar = $("aiQualityBar");
+      if (qBar) {
+        qBar.hidden = true;
+        qBar.innerHTML = "";
+      }
       tip("已清空对话 · 正文未改动");
     };
+    var tipEl = $("aiTip");
+    if (tipEl) {
+      tipEl.title = "双击复制调试日志（GwLog）";
+      tipEl.addEventListener("dblclick", function () {
+        if (!window.GwLog) return;
+        GwLog.copy().then(function (ok) {
+          tip(ok ? "调试日志已复制 · 共 " + GwLog.size() + " 条" : "复制日志失败");
+        });
+      });
+    }
     $("proofRun").onclick = runProof;
     $("proofClear").onclick = function () {
       state.proof = [];
@@ -1844,7 +2936,38 @@
         renderCiteBar();
       });
     }
+    var styleBar = $("aiStyleBar");
+    if (styleBar) {
+      styleBar.addEventListener("click", function (e) {
+        var x = e.target.closest("[data-style-x]");
+        if (!x || !window.GwProject || !GwProject.clearStyleRef) return;
+        e.preventDefault();
+        GwProject.clearStyleRef();
+        state.styleFp = null;
+        state.styleRefText = "";
+        renderStyleBar();
+        tip("已取消风格参照");
+      });
+    }
+    window.addEventListener("gw-style-ref", function () {
+      refreshStyleFingerprint();
+      renderStyleBar();
+      if (state.styleFp && !state.styleFp.error) {
+        tip(
+          "参照已就绪 · " +
+            (state.styleFp.title || state.styleFp.path) +
+            " · 学口气不照抄"
+        );
+      } else if (!GwProject.getStyleRefRel || !GwProject.getStyleRefRel()) {
+        renderStyleBar();
+      }
+    });
     renderCiteBar();
-    setInterval(renderCiteBar, 600);
+    renderStyleBar();
+    refreshStyleFingerprint();
+    setInterval(function () {
+      renderCiteBar();
+      renderStyleBar();
+    }, 600);
   };
 })();

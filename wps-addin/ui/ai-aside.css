@@ -321,6 +321,89 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   background: rgba(15, 61, 86, 0.12);
   color: #0f3d56;
 }
+#aiAside .ai-style-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 0;
+  margin-top: 4px;
+}
+#aiAside .ai-style-bar[hidden] { display: none !important; }
+#aiAside .ai-style-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border-radius: 4px;
+  background: #f3efe6;
+  border: 1px solid #d4c8b0;
+  color: #3d3426;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1;
+}
+#aiAside .ai-style-chip .ai-style-tag {
+  opacity: 0.75;
+  font-weight: 700;
+}
+#aiAside .ai-style-chip .ai-style-x {
+  border: 0;
+  background: transparent;
+  color: #7a6f5d;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  padding: 0;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+#aiAside .ai-style-chip .ai-style-x:hover {
+  background: rgba(61, 52, 38, 0.12);
+  color: #3d3426;
+}
+#aiAside .ai-quality-bar {
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid #d5dde3;
+  background: #f7f9fb;
+  font-size: 11px;
+  color: #334155;
+  line-height: 1.35;
+}
+#aiAside .ai-quality-bar[hidden] { display: none !important; }
+#aiAside .ai-q-head {
+  font-weight: 700;
+  margin-bottom: 4px;
+  color: #0f3d56;
+}
+#aiAside .ai-q-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+#aiAside .ai-q-item {
+  padding: 2px 6px;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  color: #475569;
+}
+#aiAside .ai-q-item.ok {
+  border-color: #b7d4c2;
+  background: #eef7f1;
+  color: #215c38;
+}
+#aiAside .ai-q-item.bad {
+  border-color: #e2c2c2;
+  background: #fbf1f1;
+  color: #8a2f2f;
+}
+#aiAside .ai-q-msg {
+  margin-top: 4px;
+  color: #7a3e3e;
+}
 #aiAside .ai-expand-sib {
   display: inline-flex;
   align-items: center;
@@ -799,6 +882,10 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   border-radius: 8px;
   background: #f8fafc;
 }
+#aiAside .ai-variant.is-base {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+}
 #aiAside .ai-variant-head {
   display: flex;
   align-items: center;
@@ -808,6 +895,12 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   font-size: 12px;
   font-weight: 700;
   color: #0f3d56;
+}
+#aiAside .ai-base-mark {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
 }
 #aiAside .ai-variant-body {
   margin: 0;

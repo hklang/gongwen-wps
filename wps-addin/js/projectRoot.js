@@ -8,6 +8,7 @@
   var MANUAL_KEY = "gongwen.projectRootManual";
   var INDEX_KEY = "gongwen.projectIndex";
   var CITE_KEY = "gongwen.citePaths";
+  var STYLE_REF_KEY = "gongwen.styleRefRel";
   var MATERIAL_DIR = "素材";
   var TEMPLATE_DIR = "模板";
   var VERSION_DIR = "版本";
@@ -789,6 +790,40 @@
     return { ok: true };
   }
 
+  function getStyleRefRel() {
+    return normRel(storeGet(STYLE_REF_KEY));
+  }
+
+  function setStyleRef(rel) {
+    var pathRel = normRel(rel);
+    if (!pathRel) return { ok: false, error: "空路径" };
+    if (pathRel.indexOf("..") >= 0) return { ok: false, error: "非法路径" };
+    if (!READABLE_RE.test(pathRel)) {
+      return { ok: false, error: "参照稿仅支持 doc / docx / md / txt" };
+    }
+    storeSet(STYLE_REF_KEY, pathRel);
+    try {
+      if (typeof window !== "undefined" && window.dispatchEvent) {
+        window.dispatchEvent(
+          new CustomEvent("gw-style-ref", { detail: { rel: pathRel } })
+        );
+      }
+    } catch (eEv) {}
+    return { ok: true, path: pathRel };
+  }
+
+  function clearStyleRef() {
+    storeSet(STYLE_REF_KEY, "");
+    try {
+      if (typeof window !== "undefined" && window.dispatchEvent) {
+        window.dispatchEvent(
+          new CustomEvent("gw-style-ref", { detail: { rel: "" } })
+        );
+      }
+    } catch (eEv2) {}
+    return { ok: true };
+  }
+
   function getCitePaths() {
     try {
       var raw = storeGet(CITE_KEY);
@@ -1161,6 +1196,9 @@
     addCite: addCite,
     removeCite: removeCite,
     loadCitedMaterials: loadCitedMaterials,
+    getStyleRefRel: getStyleRefRel,
+    setStyleRef: setStyleRef,
+    clearStyleRef: clearStyleRef,
     baseName: baseName,
     normRel: normRel,
     titleOf: titleOf,
