@@ -243,9 +243,8 @@
   }
 
   function ensureBase() {
-    if (!GwRelay.baseUrl()) {
-      GwRelay.setBase("http://49.233.190.103:8080/gongwen-relay");
-    }
+    /* 现阶段固定本机中转，避免每次改完还要部署云机 */
+    GwRelay.setBase("http://127.0.0.1:3000");
   }
 
   function workText() {

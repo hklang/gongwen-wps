@@ -14,11 +14,16 @@
 ## 调试
 
 ```powershell
+# 1）本机中转（现阶段默认；Key 读自 var/legacy-Word/editor/settings.py）
+cd var\legacy-Word\deploy\relay
+powershell -ExecutionPolicy Bypass -File .\start_local.ps1
+
+# 2）WPS 加载项
 cd wps-addin
 npx wpsjs debug -s
 ```
 
-功能区 **开始 → 公文**：
+加载项默认连 `http://127.0.0.1:3000`。功能区 **开始 → 公文**：
 
 | 按钮 | 作用 |
 |------|------|

@@ -3,6 +3,9 @@
 部署在云机 LXD `mybox`：`/home/ubuntu/gongwen-relay/`，监听 **3000**。  
 外网入口（已放行）：`http://49.233.190.103:8080/gongwen-relay/`
 
+**现阶段联调优先本机**：在本目录执行 `powershell -ExecutionPolicy Bypass -File .\start_local.ps1`，  
+WPS 加载项默认连 `http://127.0.0.1:3000`（Key 从 `editor/settings.py` 同步）。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |
