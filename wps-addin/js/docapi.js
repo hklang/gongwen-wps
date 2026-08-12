@@ -111,6 +111,114 @@
     return cleanText(doc().Content.Text);
   }
 
+  /**
+   * 整篇写入 —— 危险：会剥掉样式/节/域。
+   * 仅允许在「已存版本 + 用户确认整篇排版写入」后调用；商品路径优先 writeDocumentStyled。
+   */
+  function setDocumentText(text) {
+    var out = toWordText(text, true);
+    doc().Content.Text = out;
+    return cleanText(out);
+  }
+
+  function trySetParaStyle(para, names) {
+    var i;
+    for (i = 0; i < names.length; i++) {
+      try {
+        para.Style = names[i];
+        return names[i];
+      } catch (e) {}
+    }
+    return "";
+  }
+
+  function styleNamesForLevel(lvl) {
+    if (lvl === 1) return ["标题 1", "标题1", "Heading 1", "Heading1"];
+    if (lvl === 2) return ["标题 2", "标题2", "Heading 2", "Heading2"];
+    if (lvl === 3) return ["标题 3", "标题3", "Heading 3", "Heading3"];
+    return ["正文", "Normal", "本文"];
+  }
+
+  /**
+   * 光标处插入多段文本（保留周围既有样式意图；新段按公文序号尝试套标题）。
+   */
+  function insertAtCursor(text) {
+    var s = selection();
+    var lines = String(text == null ? "" : text)
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .split("\n");
+    var i;
+    for (i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        try {
+          s.TypeParagraph();
+        } catch (eP) {
+          s.Text = s.Text + "\r";
+        }
+      }
+      var line = lines[i];
+      if (line) {
+        try {
+          s.TypeText(line);
+        } catch (eT) {
+          s.Text = String(s.Text || "") + line;
+        }
+      }
+      try {
+        var para = s.Paragraphs.Item(1);
+        var lvl = gongwenLevel(line);
+        if (lvl > 0) trySetParaStyle(para, styleNamesForLevel(lvl));
+      } catch (eS) {}
+    }
+    return true;
+  }
+
+  /**
+   * 整篇按行写入并尝试套标题样式。调用前须已存版本且用户确认。
+   */
+  function writeDocumentStyled(text) {
+    var lines = String(text == null ? "" : text)
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .split("\n");
+    while (lines.length && !String(lines[lines.length - 1] || "").replace(/\s/g, "")) {
+      lines.pop();
+    }
+    var d = doc();
+    var s = selection();
+    try {
+      s.WholeStory();
+      s.Delete();
+    } catch (eDel) {
+      d.Content.Text = "";
+    }
+    try {
+      s.HomeKey(6);
+    } catch (eHome) {}
+    var i;
+    for (i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        try {
+          s.TypeParagraph();
+        } catch (eP2) {}
+      }
+      var line = lines[i];
+      if (line) {
+        try {
+          s.TypeText(line);
+        } catch (eT2) {
+          s.Text = String(s.Text || "") + line;
+        }
+      }
+      try {
+        var para = s.Paragraphs.Item(1);
+        trySetParaStyle(para, styleNamesForLevel(gongwenLevel(line)));
+      } catch (eSt) {}
+    }
+    return { ok: true, lines: lines.length };
+  }
+
   function styleNameOf(p) {
     try {
       if (p.Style && p.Style.NameLocal) return String(p.Style.NameLocal);
@@ -447,6 +555,10 @@
     replaceSelection: replaceSelection,
     replaceRange: replaceRange,
     getDocumentText: getDocumentText,
+    setDocumentText: setDocumentText,
+    insertAtCursor: insertAtCursor,
+    writeDocumentStyled: writeDocumentStyled,
+    gongwenLevel: gongwenLevel,
     selectCurrentParagraph: selectCurrentParagraph,
     listHeadings: listHeadings,
     listSiblingHeadings: listSiblingHeadings,

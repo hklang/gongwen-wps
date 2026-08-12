@@ -234,7 +234,7 @@
     return request("GET", "/api/quota");
   }
 
-  function suggest(md, requirement, capability, materials) {
+  function suggest(md, requirement, capability, materials, extra) {
     var body = {
       md: md,
       requirement: requirement || "",
@@ -242,6 +242,10 @@
       count: 2
     };
     if (materials && materials.length) body.materials = materials;
+    if (extra && typeof extra === "object") {
+      if (extra.workspace) body.workspace = extra.workspace;
+      if (extra.read_set) body.read_set = extra.read_set;
+    }
     return request("POST", "/api/suggest", body);
   }
 
@@ -253,7 +257,7 @@
     });
   }
 
-  function chat(message, contextMd, capability, allowEdit, materials) {
+  function chat(message, contextMd, capability, allowEdit, materials, extra) {
     var body = {
       message: message,
       context_md: contextMd || "",
@@ -261,6 +265,19 @@
       allow_edit: !!allowEdit
     };
     if (materials && materials.length) body.materials = materials;
+    if (extra && typeof extra === "object") {
+      [
+        "workspace",
+        "tool_results",
+        "read_set",
+        "force_final",
+        "session_summary",
+        "project_memory",
+        "history"
+      ].forEach(function (k) {
+        if (extra[k] != null) body[k] = extra[k];
+      });
+    }
     return request("POST", "/api/chat", body);
   }
 

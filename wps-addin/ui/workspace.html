@@ -13,6 +13,9 @@
   <script type="text/javascript" src="../js/relay.js"></script>
   <script type="text/javascript" src="../js/account.js"></script>
   <script type="text/javascript" src="../js/projectRoot.js"></script>
+  <script type="text/javascript" src="../js/materialIndex.js"></script>
+  <script type="text/javascript" src="../js/materialTools.js"></script>
+  <script type="text/javascript" src="../js/chatToolLoop.js"></script>
   <script type="text/javascript" src="../js/projAside.js"></script>
   <script type="text/javascript" src="../js/taskpane.js"></script>
   <script type="text/javascript">
@@ -72,6 +75,19 @@
       <div class="ai-opts" id="aiOpts">
         <div class="ai-empty">划选正文后，在下方输入要求。</div>
       </div>
+      <div class="ai-draft-panel" id="aiDraftPanel" hidden>
+        <div class="ai-draft-head">
+          <span class="ai-draft-title">正文稿</span>
+          <span class="ai-draft-note">每次写入前自动存版本</span>
+        </div>
+        <pre class="ai-draft-body" id="aiDraftBody"></pre>
+        <div class="ai-draft-acts" id="aiDraftActs">
+          <button type="button" class="primary" id="aiDraftFull" title="先存版本，再按层级排版覆盖当前全文">整篇排版写入</button>
+          <button type="button" id="aiDraftCursor" title="先存版本，再插入到光标处">写入光标处</button>
+          <button type="button" id="aiDraftSel" title="先存版本，再覆盖当前划选">覆盖选定区</button>
+          <button type="button" id="aiDraftCopy">复制</button>
+        </div>
+      </div>
       <div class="ai-compose" id="aiCompose">
         <div class="ai-sel-block" id="aiSelBlock">
           <div class="ai-sel-pop" id="aiSelPop" hidden>
@@ -98,12 +114,13 @@
           </label>
         </div>
         <div class="ai-cite-bar" id="aiCiteBar" hidden></div>
+        <div class="ai-read-bar" id="aiReadBar" hidden aria-label="已读材料"></div>
         <div class="ai-suite-presets" id="aiWriteTips" hidden>
-          <button type="button" data-write-tip="请帮我明确本稿读者、主旨一句话与不写的边界。先讨论立意，少写正文。">立意</button>
-          <button type="button" data-write-tip="请帮我搭一、二、三级标题骨架，先出可落稿的目录，少写段落。">搭架</button>
-          <button type="button" data-write-tip="请按现有标题充填事实与数据；无依据处标待核实，禁止编造数字。">充填</button>
+          <button type="button" data-write-tip="请帮我做本稿立意：明确读者对象、主旨一句话、以及不写的边界。先讨论立意，少写正文。可参考工程「模板」的结构与口径，并结合「素材」或已引用文件里的背景；勿编造事实。">立意</button>
+          <button type="button" data-write-tip="请按公文习惯搭一、二、三级标题骨架，先出可落稿的目录与要点，少写长段。优先对照「模板」篇章结构；「素材」只用来判断该写哪些板块，勿虚构事实与数据。本稿仅讨论框架，局部改写请到「精修」。">搭架</button>
         </div>
         <div class="ai-suite-presets" id="aiSuitePresets" hidden>
+          <button type="button" data-suite-preset="请按现有标题充填事实与表述。写数、写事须以「素材」及已引用文件为依据；表述详略可参考「模板」。无依据处标「待核实」，禁止编造数字、单位与结论。">充填</button>
           <button type="button" data-suite-preset="优化表述，更准确凝练">优化润色</button>
           <button type="button" data-suite-preset="句式更工整对仗">工整对仗</button>
           <button type="button" data-suite-preset="增强语言感染力">增强感染力</button>
@@ -113,11 +130,7 @@
         </div>
         <textarea class="ai-req" id="aiReq" rows="3" placeholder="问点什么…"></textarea>
         <div class="ai-toolbar">
-          <div class="ai-edit-mode" id="aiChatAuthWrap">
-            <label class="ai-chat-auth"><input type="radio" name="aiEditMode" value="talk" id="aiEditModeTalk" checked /><span>仅对话</span></label>
-            <label class="ai-chat-auth"><input type="radio" name="aiEditMode" value="auth" id="aiEditModeAuth" /><span>授权改稿</span></label>
-          </div>
-          <span class="ai-suite-hint" id="aiSuiteHint" hidden>精修会改写选定</span>
+          <span class="ai-suite-hint" id="aiSuiteHint" hidden>精修：钉住选区后改写选定</span>
           <button type="button" id="aiClearChat">清空</button>
           <span class="spacer"></span>
           <button type="button" class="primary" id="aiSend">发送</button>

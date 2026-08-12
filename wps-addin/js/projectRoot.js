@@ -14,6 +14,8 @@
   var META_DIR = ".gongwen";
   var LIST_RE = /\.docx?$/i;
   var OFFICE_RE = /\.docx?$/i;
+  var TEXT_RE = /\.(md|txt)$/i;
+  var READABLE_RE = /\.(docx?|md|txt)$/i;
 
   function storeGet(k) {
     try {
@@ -191,6 +193,41 @@
         ts.Close();
         return String(text || "");
       } catch (e2) {}
+    }
+    return null;
+  }
+
+  /** @returns {{size:number,mtime:number}|null} mtime 为秒级 unix */
+  function fsStat(abs) {
+    var p = normSlash(abs);
+    var fs = getWpsFs();
+    if (fs && typeof fs.statSync === "function") {
+      try {
+        var st = fs.statSync(p);
+        if (!st) return null;
+        var m =
+          st.mtimeMs != null
+            ? Number(st.mtimeMs) / 1000
+            : st.mtime
+              ? new Date(st.mtime).getTime() / 1000
+              : 0;
+        return {
+          size: Number(st.size || st.Size || 0) || 0,
+          mtime: m || 0
+        };
+      } catch (e) {}
+    }
+    var fso = getFso();
+    if (fso) {
+      try {
+        if (!fso.FileExists(p)) return null;
+        var f = fso.GetFile(p);
+        var mt = 0;
+        try {
+          mt = new Date(f.DateLastModified).getTime() / 1000;
+        } catch (e2) {}
+        return { size: Number(f.Size) || 0, mtime: mt || 0 };
+      } catch (e3) {}
     }
     return null;
   }
@@ -521,20 +558,26 @@
     return resolveRoot();
   }
 
-  function listFilesInFolder(absDir, relPrefix, limit) {
+  function listFilesInFolder(absDir, relPrefix, limit, nameRe) {
     var out = [];
     var max = limit || 40;
+    var re = nameRe || LIST_RE;
     var names = fsReaddirNames(absDir);
     if (!names) return out;
     names = names.slice().sort();
+    var dir = normSlash(String(absDir || "").replace(/[\\\/]+$/, ""));
     for (var j = 0; j < names.length && out.length < max; j++) {
       var name = String(names[j] || "");
-      if (!LIST_RE.test(name) || name.charAt(0) === ".") continue;
+      if (!re.test(name) || name.charAt(0) === ".") continue;
       var rel = normRel((relPrefix ? relPrefix + "/" : "") + name);
+      var abs = dir + "\\" + name;
+      var st = fsStat(abs);
       out.push({
         path: rel,
         title: titleOf(name),
-        kind: "office"
+        kind: OFFICE_RE.test(name) ? "office" : "text",
+        size: st ? st.size : 0,
+        mtime: st ? st.mtime : 0
       });
     }
     return out;
@@ -546,10 +589,25 @@
       if (!fsExists(root)) return null;
       var via = getWpsFs() ? "wpsfs" : "fso";
       return {
-        docs: listFilesInFolder(root, "", 30),
-        materials: listFilesInFolder(joinRoot(root, MATERIAL_DIR), MATERIAL_DIR, 40),
-        templates: listFilesInFolder(joinRoot(root, TEMPLATE_DIR), TEMPLATE_DIR, 40),
-        versions: listFilesInFolder(joinRoot(root, VERSION_DIR), VERSION_DIR, 40),
+        docs: listFilesInFolder(root, "", 30, LIST_RE),
+        materials: listFilesInFolder(
+          joinRoot(root, MATERIAL_DIR),
+          MATERIAL_DIR,
+          40,
+          READABLE_RE
+        ),
+        templates: listFilesInFolder(
+          joinRoot(root, TEMPLATE_DIR),
+          TEMPLATE_DIR,
+          40,
+          READABLE_RE
+        ),
+        versions: listFilesInFolder(
+          joinRoot(root, VERSION_DIR),
+          VERSION_DIR,
+          40,
+          LIST_RE
+        ),
         via: via
       };
     } catch (e) {
@@ -694,15 +752,28 @@
     if (!root || !pathRel) return { ok: false, error: "无工程或路径" };
     if (pathRel.indexOf("..") >= 0) return { ok: false, error: "非法路径" };
     var abs = joinRoot(root, pathRel);
-    if (!OFFICE_RE.test(pathRel)) {
-      return { ok: false, error: "仅支持读取 doc / docx" };
+    if (!READABLE_RE.test(pathRel)) {
+      return { ok: false, error: "仅支持读取 doc / docx / md / txt" };
     }
     if (hasDiskApi() && !fsExists(abs)) {
       return { ok: false, error: "文件不存在" };
     }
+    if (TEXT_RE.test(pathRel)) {
+      var tx = fsReadText(abs);
+      if (tx == null) return { ok: false, error: "无法读取文本文件", path: pathRel };
+      return { ok: true, path: pathRel, text: cleanDocText(tx), via: "text" };
+    }
     var r = extractOfficeText(abs);
     if (!r.ok) return r;
     return { ok: true, path: pathRel, text: r.text, via: r.via };
+  }
+
+  function absStatRel(rel) {
+    resolveRoot();
+    var root = getRoot();
+    var pathRel = normRel(rel);
+    if (!root || !pathRel || pathRel.indexOf("..") >= 0) return null;
+    return fsStat(joinRoot(root, pathRel));
   }
 
   function deleteRel(rel) {
@@ -1060,6 +1131,9 @@
     ROOT_KEY: ROOT_KEY,
     CITE_KEY: CITE_KEY,
     VERSION_DIR: VERSION_DIR,
+    MATERIAL_DIR: MATERIAL_DIR,
+    TEMPLATE_DIR: TEMPLATE_DIR,
+    META_DIR: META_DIR,
     getRoot: getRoot,
     getName: getName,
     setRoot: setRoot,
@@ -1072,6 +1146,12 @@
     pickFolder: pickFolder,
     listProjectFiles: listProjectFiles,
     readTextRel: readTextRel,
+    absStatRel: absStatRel,
+    fsStat: fsStat,
+    fsExists: fsExists,
+    fsReadText: fsReadText,
+    fsWriteText: fsWriteText,
+    joinRoot: joinRoot,
     deleteRel: deleteRel,
     getCitePaths: getCitePaths,
     setCitePaths: setCitePaths,
@@ -1083,6 +1163,7 @@
     loadCitedMaterials: loadCitedMaterials,
     baseName: baseName,
     normRel: normRel,
+    titleOf: titleOf,
     getFso: getFso,
     getWpsFs: getWpsFs,
     hasDiskApi: hasDiskApi

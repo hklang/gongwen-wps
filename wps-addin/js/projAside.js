@@ -73,6 +73,9 @@
       "</span></button>";
     if (key === "materials") {
       html +=
+        '<button type="button" class="file-sec-act" data-refresh-materials ' +
+        'title="全量重建素材/模板索引（文件有更新可点）">刷新</button>';
+      html +=
         '<button type="button" class="file-sec-act" data-convert-materials ' +
         'title="素材转换（后续）">转换</button>';
     }
@@ -154,6 +157,19 @@
       $("projAsideTitle").textContent = data.name
         ? "工程 · " + data.name
         : "工程文件";
+    }
+    /* 打开/刷新列表时后台增量索引（不挡 UI） */
+    if (window.GwMaterialIndex && data.root) {
+      try {
+        var idx = GwMaterialIndex.load();
+        if (!idx.files || !idx.files.length) {
+          setTimeout(function () {
+            try {
+              GwMaterialIndex.syncIncremental();
+            } catch (e0) {}
+          }, 80);
+        }
+      } catch (e1) {}
     }
     var docsEmpty =
       !data.docs.length && data.materials.length
@@ -321,6 +337,22 @@
     $("btnProjBind").addEventListener("click", bindProject);
     $("btnProjRefresh").addEventListener("click", function () {
       renderProjectFiles(false);
+      if (window.GwMaterialIndex) {
+        setStatus("正在同步索引…", "");
+        try {
+          var sy = GwMaterialIndex.syncIncremental();
+          if (sy && sy.ok) {
+            setStatus(
+              "列表已刷新 · 索引" +
+                (sy.mode === "full" ? "已建" : "更新" + (sy.changed || 0)) +
+                "（" +
+                (sy.count || 0) +
+                "）",
+              "ok"
+            );
+          }
+        } catch (eIdx) {}
+      }
     });
     $("btnProjCollapse").addEventListener("click", function () {
       setCollapsed(true);
@@ -330,6 +362,41 @@
     });
 
     $("projAsideBody").addEventListener("click", function (e) {
+      if (e.target.closest("[data-refresh-materials]")) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!window.GwMaterialIndex) {
+          setStatus("索引模块未加载", "err");
+          return;
+        }
+        setStatus("正在全量重建素材索引…", "");
+        try {
+          var r = GwMaterialIndex.rebuildFull(function (p) {
+            if (p && p.path) {
+              setStatus(
+                "索引 " + p.current + "/" + p.total + " · " + p.path,
+                ""
+              );
+            }
+          });
+          if (!r || !r.ok) {
+            setStatus((r && r.error) || "索引失败", "err");
+            return;
+          }
+          renderProjectFiles(true);
+          setStatus(
+            "索引完成 · " +
+              (r.okCount || 0) +
+              "/" +
+              (r.count || 0) +
+              " 可读",
+            "ok"
+          );
+        } catch (err) {
+          setStatus("索引异常：" + (err.message || err), "err");
+        }
+        return;
+      }
       if (e.target.closest("[data-convert-materials]")) {
         setStatus("「转换」暂不需要（直接引用 docx）", "warn");
         return;

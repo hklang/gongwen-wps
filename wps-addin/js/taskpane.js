@@ -14,7 +14,9 @@
     previewId: null,
     adoptedId: null,
     optView: "diff",
-    suiteBaseline: ""
+    suiteBaseline: "",
+    /** 撰写正文稿：{ md, summary, staged }；落稿由用户点按钮 */
+    chatPending: null
   };
 
   function $(id) {
@@ -148,6 +150,7 @@
     if (!snapshotEqual(state.live, next)) {
       state.live = next;
       renderWorkChip();
+      if (state.tab === "write") syncDraftPanel();
     }
     return state.live;
   }
@@ -249,6 +252,139 @@
     state.previewId = null;
     state.adoptedId = null;
     state.suiteBaseline = "";
+  }
+
+  function normalizeEditMd(edit) {
+    if (!edit) return "";
+    if (typeof edit === "string") return String(edit).trim();
+    if (typeof edit === "object") return String(edit.md || "").trim();
+    return "";
+  }
+
+  /** 撰写正文稿：独立面板展示；写入前必须存版本 */
+  function resetChatPending() {
+    state.chatPending = null;
+    syncDraftPanel();
+  }
+
+  function draftMd() {
+    return (state.chatPending && state.chatPending.md) || "";
+  }
+
+  function syncDraftPanel() {
+    var panel = $("aiDraftPanel");
+    var body = $("aiDraftBody");
+    if (!panel || !body) return;
+    var md = draftMd();
+    var show = state.tab === "write" && !!String(md).replace(/\s/g, "");
+    panel.hidden = !show;
+    body.textContent = show ? md : "";
+    var selBtn = $("aiDraftSel");
+    if (selBtn) {
+      var hasSel = false;
+      try {
+        var info = GwDoc.getSelectionInfo();
+        hasSel = !!(info && String(info.text || "").replace(/\s/g, ""));
+      } catch (e) {}
+      selBtn.disabled = !hasSel;
+      selBtn.title = hasSel
+        ? "先存版本，再覆盖当前划选"
+        : "请先在正文划选要覆盖的区域";
+    }
+  }
+
+  function saveVersionOrThrow() {
+    if (!window.GwProject || !GwProject.saveActiveToVersion) {
+      throw new Error("无法存版本：工程模块未就绪");
+    }
+    var sv = GwProject.saveActiveToVersion();
+    if (!sv || !sv.ok) {
+      throw new Error((sv && sv.error) || "存版本失败，已中止写入");
+    }
+    return sv;
+  }
+
+  /** 每个改正文的点击：先存版本，再执行写入 */
+  function withVersionThenWrite(label, writeFn) {
+    if (state.busy) return;
+    var md = draftMd();
+    if (!String(md).replace(/\s/g, "")) {
+      tip("没有正文稿可写入");
+      return;
+    }
+    setBusy(true);
+    tip("正在存版本…");
+    try {
+      var sv = saveVersionOrThrow();
+      tip("已存版本 · 正在" + label + "…");
+      writeFn(md);
+      tip(
+        label +
+          "完成 · 版本：" +
+          (sv.path ? String(sv.path).replace(/^.*[\\\/]/, "") : "已保存")
+      );
+    } catch (e) {
+      tip(e.message || String(e));
+      alert(e.message || e);
+    }
+    setBusy(false);
+    syncDraftPanel();
+  }
+
+  function applyDraftFull() {
+    if (
+      !confirm(
+        "将先自动存一个版本，再按层级排版覆盖【当前全文】。\n\n确定继续？"
+      )
+    ) {
+      return;
+    }
+    withVersionThenWrite("整篇排版写入", function (md) {
+      GwDoc.writeDocumentStyled(md);
+    });
+  }
+
+  function applyDraftCursor() {
+    withVersionThenWrite("写入光标处", function (md) {
+      GwDoc.insertAtCursor(md);
+    });
+  }
+
+  function applyDraftSelection() {
+    var info = null;
+    try {
+      info = GwDoc.getSelectionInfo();
+    } catch (e) {}
+    if (!info || !String(info.text || "").replace(/\s/g, "")) {
+      tip("请先在正文划选要覆盖的区域");
+      alert("请先在正文用鼠标划选要覆盖的内容，再点「覆盖选定区」。");
+      return;
+    }
+    withVersionThenWrite("覆盖选定区", function (md) {
+      GwDoc.replaceSelection(md, {
+        endsWithPara: !!info.endsWithPara
+      });
+    });
+  }
+
+  function copyDocDraft() {
+    var md = draftMd();
+    if (!String(md).replace(/\s/g, "")) {
+      tip("没有可复制的正文稿");
+      return;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(md).then(
+        function () {
+          tip("已复制正文稿");
+        },
+        function () {
+          tip("复制失败");
+        }
+      );
+    } else {
+      tip("当前环境不支持复制");
+    }
   }
 
   /**
@@ -383,18 +519,6 @@
     tip("已清除");
   }
 
-  function restoreWorkRange() {
-    if (!state.work) return;
-    try {
-      if (
-        typeof state.work.start === "number" &&
-        typeof state.work.end === "number"
-      ) {
-        GwDoc.selectRange(state.work.start, state.work.end);
-      }
-    } catch (e) {}
-  }
-
   function escHtml(s) {
     return String(s == null ? "" : s)
       .replace(/&/g, "&amp;")
@@ -515,7 +639,7 @@
   function syncRestoreBtn() {
     var btn = $("aiRestore");
     if (!btn) return;
-    /* 对标旧版：有 baseline 且已预览/采用才显示 */
+    /* 仅精修：出方案后可还原选区。撰写整篇禁止用纯文本覆盖还原。 */
     var show =
       state.tab === "suite" &&
       !!(state.work && state.suiteBaseline && (state.previewId || state.adoptedId));
@@ -523,10 +647,12 @@
     if (show) btn.classList.add("show");
     else btn.classList.remove("show");
     btn.disabled = !!state.busy;
+    btn.title = "还原为出方案前的原文";
   }
 
   /** 按钉子范围写回；保留原段末标记，避免与下一段粘连 */
-  function writeWorkText(md) {
+  function writeWorkText(md, opts) {
+    opts = opts || {};
     if (state.work && state.work.items && state.work.items.length > 1) {
       tip("同级多条暂不支持一次写回，请取消扩选后单条精修");
       alert("同级多标题暂不支持一次写回，请取消扩选后只精修一条。");
@@ -543,12 +669,27 @@
       state.work.start,
       state.work.end,
       md || "",
-      { endsWithPara: !!state.work.endsWithPara }
+      {
+        endsWithPara: !!state.work.endsWithPara,
+        allowEmpty: !!opts.allowEmpty
+      }
     );
     state.work.text = String(md || "");
     state.work.start = r.start;
     state.work.end = r.end;
     renderWorkChip();
+    syncRestoreBtn();
+    return true;
+  }
+
+  function stageDocDraft(md, summary) {
+    state.chatPending = {
+      md: String(md || ""),
+      summary: String(summary || "").slice(0, 80),
+      staged: true,
+      scope: "doc-draft"
+    };
+    syncDraftPanel();
     syncRestoreBtn();
     return true;
   }
@@ -617,23 +758,6 @@
     }
   }
 
-  function applyWorkReplace(md) {
-    if (state.work && state.work.items && state.work.items.length > 1) {
-      tip("同级多条暂不支持一次写回，请取消扩选后单条精修");
-      alert("同级多标题暂不支持一次写回，请取消扩选后只精修一条。");
-      return;
-    }
-    restoreWorkRange();
-    GwDoc.replaceSelection(md || "");
-    state.work = null;
-    state.suiteBaseline = "";
-    state.previewId = null;
-    state.adoptedId = null;
-    setSelPop(false);
-    renderWorkChip();
-    syncRestoreBtn();
-  }
-
   function syncTabUi() {
     var tab = state.tab;
     ["write", "suite", "proof"].forEach(function (name) {
@@ -652,15 +776,17 @@
     $("aiSuitePresets").hidden = tab !== "suite";
     var expandWrap = $("aiExpandSibWrap");
     if (expandWrap) expandWrap.hidden = tab !== "suite";
-    $("aiChatAuthWrap").hidden = tab !== "write";
+    /* 撰写不钉选区；精修/校对才显示选区条 */
+    var selBlock = $("aiSelBlock");
+    if (selBlock) selBlock.hidden = tab === "write";
     $("aiSuiteHint").hidden = tab !== "suite";
     $("aiClearChat").hidden = tab === "proof" || tab === "suite";
     var ha = $("aiHeadActions");
     if (ha) ha.hidden = false;
     $("aiReq").placeholder =
       tab === "suite"
-        ? "写精修要求，或点上方快捷项…"
-        : "问点什么，或点上方立意 / 搭架 / 充填…";
+        ? "写精修要求，或点上方充填 / 润色…"
+        : "多聊聊构思，或点上方立意 / 搭架…";
     $("aiSend").textContent =
       tab === "suite" ? (state.options.length ? "再出" : "出方案") : "发送";
     var status = $("aiEditStatus");
@@ -672,7 +798,9 @@
             : state.adoptedId
               ? "已采用"
               : "精修"
-          : "WPS";
+          : state.chatPending && state.chatPending.staged
+            ? "有正文稿"
+            : "撰写";
     }
     if (tab === "suite" && state.options.length) {
       tip(
@@ -682,18 +810,21 @@
             ? "已采用 · 可还原"
             : "精修会改写选定 · 可预览 / 采用"
       );
+    } else if (tab === "write" && state.chatPending && state.chatPending.staged) {
+      tip("下方「正文稿」点按钮写入；每次写入前自动存版本");
     } else {
       tip(
         tab === "suite"
           ? "划选后点「钉住」；可反复换钉"
           : tab === "proof"
             ? "选范围后点开始校对"
-            : "撰写对话；授权改稿时可写回选区"
+            : "多聊构思；有正文稿时点下方按钮写入（每次先存版本）"
       );
     }
     syncRestoreBtn();
     renderWorkChip();
     renderOpts();
+    syncDraftPanel();
   }
 
   function renderOpts() {
@@ -753,7 +884,7 @@
     if (state.tab === "suite") {
       if (!state.options.length) {
         box.innerHTML =
-          '<div class="ai-empty"><b>精修会改写选定</b>：划选并钉住 → 写要求或点快捷项 → 出方案 → 预览/采用</div>';
+          '<div class="ai-empty"><b>精修会改写选定</b>：划选并钉住 → 充填/润色或写要求 → 出方案 → 预览/采用</div>';
         return;
       }
       var view = state.optView === "new" ? "new" : "diff";
@@ -851,7 +982,7 @@
 
     if (!state.chat.length) {
       box.innerHTML =
-        '<div class="ai-empty">撰写：可先划选钉住作上下文。立意 / 搭架 / 充填为引导。</div>';
+        '<div class="ai-empty">撰写：对话聊构思；正文稿单独显示。点「整篇排版写入 / 写入光标处 / 覆盖选定区」才落稿，每次写入前自动存版本。清空对话不改正文。</div>';
       return;
     }
     var log = document.createElement("div");
@@ -860,24 +991,6 @@
       var b = document.createElement("div");
       b.className = "ai-bubble " + (m.role === "user" ? "user" : "assistant");
       b.textContent = m.text;
-      if (m.role === "assistant" && m.allowApply) {
-        var acts = document.createElement("div");
-        acts.className = "ai-actions";
-        var btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "primary";
-        btn.textContent = "写回选区";
-        btn.onclick = function () {
-          try {
-            applyWorkReplace(m.text);
-            tip("已写回选区");
-          } catch (e) {
-            alert(e.message);
-          }
-        };
-        acts.appendChild(btn);
-        b.appendChild(acts);
-      }
       log.appendChild(b);
     });
     box.appendChild(log);
@@ -904,56 +1017,119 @@
     });
   }
 
+  /** 自动精读不刷条；用户引用只走 aiCiteBar */
+  function hideReadBar() {
+    var bar = $("aiReadBar");
+    if (!bar) return;
+    bar.hidden = true;
+    bar.innerHTML = "";
+  }
+
+  function docContextMd() {
+    var full = "";
+    try {
+      full = GwDoc.getDocumentText() || "";
+    } catch (e) {
+      full = "";
+    }
+    return contextWithCites(full);
+  }
+
   function sendWrite() {
     var msg = ($("aiReq").value || "").trim();
     if (!msg) {
       tip("请先输入内容");
       return;
     }
-    if (!workText().replace(/\s/g, "")) {
-      commitLiveToWork({});
-    }
-    var ctx = contextWithCites(workText());
+    /* 始终允许返回正文稿；是否写入由用户点按钮决定 */
+    var allow = true;
+    var ctx = docContextMd();
     var mats = citedMaterials();
-    var allow =
-      document.querySelector('input[name="aiEditMode"]:checked') &&
-      document.querySelector('input[name="aiEditMode"]:checked').value ===
-        "auth";
+    var sendMsg =
+      msg +
+      "\n\n【宿主约束】你在「撰写」模式。" +
+      "纯讨论时：reply 说明即可，edit 为 null。" +
+      "若用户要框架/初稿/可落稿正文：最终须为 JSON，edit.md=正文稿（换行分段；用「一、」「（一）」标层级），reply 一两句说明。" +
+      "宿主把 edit.md 放进「正文稿」区，由用户点按钮写入；禁止声称已写入文档。";
     withLogin(function () {
       state.chat.push({ role: "user", text: msg });
       $("aiReq").value = "";
       renderOpts();
       setBusy(true);
       tip("撰写中…");
-      return GwRelay.chat(msg, ctx, capability(), allow, mats)
+      hideReadBar();
+      var runner =
+        window.GwChatLoop && GwChatLoop.runChat
+          ? GwChatLoop.runChat({
+              message: sendMsg,
+              contextMd: ctx,
+              capability: capability(),
+              allowEdit: allow,
+              materials: mats,
+              onStatus: function (s) {
+                var t = String(s || "");
+                if (/索引|同步/.test(t)) tip("正在准备材料…");
+                else if (/执行|read_file|list_files|search/.test(t))
+                  tip("正在查阅材料…");
+                else if (/作答|思考/.test(t)) tip("撰写中…");
+                else if (t) tip("撰写中…");
+              }
+            })
+          : GwRelay.chat(sendMsg, ctx, capability(), allow, mats).then(
+              function (data) {
+                return {
+                  reply: (data && data.reply) || "(空回复)",
+                  edit: data && data.edit
+                };
+              }
+            );
+      return runner
         .then(function (data) {
           var reply = (data && data.reply) || "(空回复)";
-          state.chat.push({
+          var editMd = normalizeEditMd(data && data.edit);
+          if (!editMd && window.GwMaterialTools) {
+            var parsed = GwMaterialTools.parseAgentPayload(reply, data);
+            if (parsed && parsed.edit) {
+              editMd = normalizeEditMd(parsed.edit);
+              if (parsed.reply) reply = parsed.reply;
+            }
+          }
+          var bubble = {
             role: "assistant",
             text: reply,
-            allowApply: allow
-          });
+            editMd: ""
+          };
+          if (editMd) {
+            stageDocDraft(editMd, reply);
+            bubble.editMd = editMd;
+            bubble.text =
+              reply +
+              (/\n/.test(reply) ? "\n\n" : "\n") +
+              "（正文稿已就绪：点下方按钮写入；每次写入前自动存版本）";
+            tip("正文稿已就绪 · 点下方按钮写入");
+          } else {
+            tip("完成");
+          }
+          state.chat.push(bubble);
           renderOpts();
-          tip("完成");
+          syncTabUi();
         })
         .catch(function (e) {
-          var msg =
+          var err =
             (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
             e.message ||
             "失败";
-          tip(msg);
+          tip(err);
           state.chat.push({
             role: "assistant",
-            text: "失败：" + msg
+            text: "失败：" + err
           });
           renderOpts();
         })
         .then(function () {
           setBusy(false);
         });
-    }).catch(function () {
-      /* 未登录已弹窗；勿再推失败气泡 */
-    });
+    }).catch(function () {});
   }
 
   function sendSuite() {
@@ -969,13 +1145,30 @@
     var mats = citedMaterials();
     withLogin(function () {
       setBusy(true);
-      tip("出方案中…");
-      return GwRelay.suggest(workText(), req, capability(), mats)
+      tip("同步素材并出方案…");
+      var prep =
+        window.GwChatLoop && GwChatLoop.prepareSuggestMaterials
+          ? GwChatLoop.prepareSuggestMaterials(req, mats)
+          : Promise.resolve(mats);
+      return prep
+        .then(function (readyMats) {
+          hideReadBar();
+          var ws =
+            window.GwMaterialIndex && GwMaterialIndex.workspaceForAi
+              ? GwMaterialIndex.workspaceForAi()
+              : null;
+          tip("出方案中…");
+          return GwRelay.suggest(workText(), req, capability(), readyMats, {
+            workspace: ws,
+            read_set: (readyMats || []).map(function (m) {
+              return m.path;
+            })
+          });
+        })
         .then(function (data) {
           state.suiteBaseline = workText();
           state.previewId = null;
           state.adoptedId = null;
-          /* 出方案瞬间再确认段末标记，避免钉住时被 trim 丢了 */
           if (state.work) {
             try {
               GwDoc.selectRange(state.work.start, state.work.end);
@@ -991,12 +1184,12 @@
           tip("已出 " + state.options.length + " 案 · 可预览 / 采用");
         })
         .catch(function (e) {
-          var msg =
+          var em =
             (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
             e.message ||
             "失败";
-          tip(msg);
-          alert(msg);
+          tip(em);
+          alert(em);
         })
         .then(function () {
           setBusy(false);
@@ -1142,8 +1335,21 @@
       document.querySelectorAll("[data-write-tip]"),
       function (btn) {
         btn.onclick = function () {
-          $("aiReq").value = btn.getAttribute("data-write-tip") || "";
-          $("aiReq").focus();
+          var tipText = btn.getAttribute("data-write-tip") || "";
+          var req = $("aiReq");
+          if (!req) return;
+          /* 切换引导：先清空原提示，再写入当前项（不拼接） */
+          req.value = "";
+          req.value = tipText;
+          Array.prototype.forEach.call(
+            document.querySelectorAll("#aiWriteTips [data-write-tip]"),
+            function (b) {
+              b.classList.toggle("on", b === btn);
+            }
+          );
+          try {
+            req.focus();
+          } catch (eFocus) {}
         };
       }
     );
@@ -1167,6 +1373,14 @@
       if (state.tab === "suite") sendSuite();
       else sendWrite();
     };
+    var draftFull = $("aiDraftFull");
+    if (draftFull) draftFull.onclick = applyDraftFull;
+    var draftCursor = $("aiDraftCursor");
+    if (draftCursor) draftCursor.onclick = applyDraftCursor;
+    var draftSel = $("aiDraftSel");
+    if (draftSel) draftSel.onclick = applyDraftSelection;
+    var draftCopy = $("aiDraftCopy");
+    if (draftCopy) draftCopy.onclick = copyDocDraft;
     var restoreBtn = $("aiRestore");
     if (restoreBtn) {
       restoreBtn.onclick = function () {
@@ -1174,6 +1388,8 @@
       };
     }
     $("aiClearChat").onclick = function () {
+      /* 铁律：清空对话绝不碰 ActiveDocument */
+      resetChatPending();
       state.chat = [];
       state.options = [];
       state.previewId = null;
@@ -1181,6 +1397,8 @@
       state.suiteBaseline = "";
       syncRestoreBtn();
       renderOpts();
+      syncTabUi();
+      tip("已清空对话 · 正文未改动");
     };
     $("proofRun").onclick = runProof;
     $("proofClear").onclick = function () {
