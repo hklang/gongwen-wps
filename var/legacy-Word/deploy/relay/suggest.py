@@ -1095,22 +1095,72 @@ def _infer_chat_edit(message: str, doc_md: str, workspace: dict | None = None):
     )
 
 
+def _host_forbids_local_scaffold(message: str) -> bool:
+    """WPS/宿主已声明须由模型出稿时，禁止本地【待补】骨架顶替。"""
+    msg = message or ""
+    if "【宿主约束】" in msg or "严禁空壳" in msg:
+        return True
+    if "给多份" in msg or "出结论" in msg:
+        return True
+    if re.search(r"options\s*[:=]\s*\[", msg):
+        return True
+    return False
+
+
+def _wants_options_payload(message: str) -> bool:
+    msg = message or ""
+    if "给多份" in msg:
+        return True
+    if "options" in msg and ("宿主约束" in msg or "必须输出 JSON" in msg):
+        return True
+    return bool(re.search(r"options\s*[:=]\s*\[", msg))
+
+
+def _normalize_chat_options(raw) -> list | None:
+    if not isinstance(raw, list):
+        return None
+    out: list[dict] = []
+    for i, it in enumerate(raw):
+        if not isinstance(it, dict):
+            continue
+        md = str(it.get("md") or it.get("body") or "").strip()
+        if not md:
+            continue
+        oid = str(it.get("id") or "").strip() or chr(65 + len(out))
+        out.append(
+            {
+                "id": oid,
+                "md": md,
+                "note": str(it.get("note") or it.get("summary") or "").strip(),
+            }
+        )
+        if len(out) >= 5:
+            break
+    return out or None
+
+
 def _parse_chat_edit_response(text: str) -> dict:
     """解析授权改稿 JSON；失败则整段当 reply、无 edit。"""
     raw = (text or "").strip()
     if not raw:
-        return {"reply": "（无回复）", "edit": None}
+        return {"reply": "（无回复）", "edit": None, "options": None}
     t = _strip_code_fence(raw).strip()
     start, end = t.find("{"), t.rfind("}")
     if start >= 0 and end > start:
         try:
             obj = _loads_model_json(t[start : end + 1])
-            if isinstance(obj, dict) and ("reply" in obj or "edit" in obj):
+            if isinstance(obj, dict) and (
+                "reply" in obj or "edit" in obj or "options" in obj
+            ):
                 reply = str(obj.get("reply") or "").strip() or "（已处理）"
-                return {"reply": reply, "edit": _normalize_chat_edit(obj.get("edit"))}
+                return {
+                    "reply": reply,
+                    "edit": _normalize_chat_edit(obj.get("edit")),
+                    "options": _normalize_chat_options(obj.get("options")),
+                }
         except Exception:
             pass
-    return {"reply": raw, "edit": None}
+    return {"reply": raw, "edit": None, "options": None}
 
 
 _TOOL_RULES_NATIVE = (
@@ -1173,7 +1223,13 @@ def chat(
             ):
                 return r
             edit = (r.get("edit") if isinstance(r.get("edit"), dict) else None)
-            if not (edit and edit.get("md")):
+            has_opts = isinstance(r.get("options"), list) and len(r.get("options") or []) >= 1
+            # 宿主声明须模型出稿 / 已有 options：禁止本地【待补】骨架覆盖
+            if (
+                not has_opts
+                and not (edit and edit.get("md"))
+                and not _host_forbids_local_scaffold(message)
+            ):
                 local = _infer_chat_edit(message, doc_md, workspace)
                 if local:
                     r = dict(r)
@@ -1199,7 +1255,34 @@ def chat(
         if force_final
         else (_TOOL_RULES_NATIVE if use_native_tools else _TOOL_RULES_TEXT)
     )
-    if allow_edit:
+    if allow_edit and _wants_options_payload(msg):
+        system = (
+            f"你是机关{role}。用户已勾选「给多份」，须由模型给出多组可落稿参考。"
+            + tool_rules
+            + "最终答复必须是且仅是一个 JSON 对象（禁止 markdown 代码围栏）："
+            '{"reply":"一两句说明","edit":null,'
+            '"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"},'
+            '{"id":"B","note":"…","md":"…"},{"id":"C","note":"…","md":"…"}]}'
+            "硬性规则："
+            "1) edit 必须为 null；options 至少 2 组，默认 3 组，最多 5 组；"
+            "2) 每组 md 必须含点选层级的标题行（## / ### 等），对仗句式优先（前半后半都要有区分度）；"
+            "3) 严禁【待补】空壳占位模板；无依据处标【待核实】或不写数字；"
+            "4) 紧贴用户给出的「第一点/第二点…」结构与钉住范围；举例项（如「包含…」）不得压过主干意图；"
+            "5) 禁止声称已写入；reply 一两句即可。"
+        )
+    elif allow_edit and _host_forbids_local_scaffold(msg):
+        system = (
+            f"你是机关{role}。用户已授权出可落稿结论，须由模型生成。"
+            + tool_rules
+            + "最终答复必须是且仅是一个 JSON 对象（禁止 markdown 代码围栏）："
+            '{"reply":"简短说明","edit":{"summary":"一句话","md":"可落稿Markdown"}}'
+            "硬性规则："
+            "1) edit.md 必须是可落稿 Markdown，禁止只在 reply 描述；"
+            "2) 严禁【待补】空壳占位；无依据处标【待核实】或不写数字；"
+            "3) 紧贴用户结构与钉住范围；对仗标题前半后半都要有区分度；"
+            "4) 禁止声称已写入；reply 一两句即可。"
+        )
+    elif allow_edit:
         system = (
             f"你是机关{role}。用户已授权改稿。"
             + tool_rules
@@ -1347,17 +1430,32 @@ def chat(
         }
     if allow_edit:
         parsed = _parse_chat_edit_response(raw)
-        edit = parsed["edit"] or _infer_chat_edit(msg, doc, workspace)
+        options = parsed.get("options")
+        edit = parsed.get("edit")
+        if (
+            not options
+            and not (edit and edit.get("md"))
+            and not _host_forbids_local_scaffold(msg)
+        ):
+            edit = _infer_chat_edit(msg, doc, workspace)
         reply = parsed["reply"]
-        if edit and (not parsed["edit"] or "结论" in reply[:20]):
+        if (
+            edit
+            and not options
+            and (not parsed.get("edit") or "结论" in reply[:20])
+        ):
             reply = edit.get("summary") or reply
-        return {
+        out = {
             "ok": True,
             "type": "final",
             "reply": reply,
             "edit": edit,
             "provider": _provider(provider),
         }
+        if options:
+            out["options"] = options
+            out["edit"] = None
+        return out
     return {
         "ok": True,
         "type": "final",

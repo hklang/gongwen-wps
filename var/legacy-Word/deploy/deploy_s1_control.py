@@ -25,6 +25,7 @@ FILES = [
     "control_invite.py",
     "control_org.py",
     "relay_server.py",
+    "suggest.py",
     "admin.html",
     "test_control_invite_smoke.py",
     "test_control_org_smoke.py",

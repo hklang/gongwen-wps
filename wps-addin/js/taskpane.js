@@ -498,268 +498,7 @@
     });
   }
 
-  /**
-   * 中转只回空壳时：按用户话里的「第一点/第二点…」本地生成多组一级提纲。
-   * 标题用通用对仗模板套用户要点，不查行业/单位词表。
-   */
-  function synthVariantsFromUserOutline(msg) {
-    var s = String(msg || "");
-    var blocks = [];
-    var re = /第([一二三四五六七八九十\d]+)点[说是：:\s]*/g;
-    var hits = [];
-    var m;
-    while ((m = re.exec(s))) {
-      hits.push({
-        n: m[1],
-        headEnd: m.index + m[0].length,
-        headStart: m.index
-      });
-    }
-    var i;
-    for (i = 0; i < hits.length; i++) {
-      var end = i + 1 < hits.length ? hits[i + 1].headStart : s.length;
-      var slice = s.slice(hits[i].headEnd, end);
-      var cut = slice.search(/二级标题|我比较喜欢|这样的句式|句式/);
-      if (cut >= 0) slice = slice.slice(0, cut);
-      var body = slice
-        .replace(/[【】\[\]]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      if (body) blocks.push({ n: hits[i].n, body: body });
-    }
-    if (blocks.length < 2) return [];
-
-    function titleFromBlock(body, tone) {
-      var themes = extractThemesUniversal(body);
-      if (themes.length) return pairTitleFromTheme(themes[0], tone);
-      var parts = String(body || "")
-        .split(/[，,、含和与]/)
-        .map(function (x) {
-          return String(x || "").replace(/\s+/g, "").trim();
-        })
-        .filter(function (x) {
-          return x.length >= 2 && x.length <= 12;
-        });
-      if (parts.length >= 2) {
-        return pairTitleFromTheme(parts[0] + parts[1].slice(0, 4), tone);
-      }
-      if (parts.length === 1) return pairTitleFromTheme(parts[0], tone);
-      return pairTitleFromTheme(String(body || "").slice(0, 10) || "工作要点", tone);
-    }
-
-    function mdForTone(tone) {
-      var lines = ["# 提纲", ""];
-      var nums = ["一", "二", "三", "四", "五", "六"];
-      for (var j = 0; j < blocks.length; j++) {
-        var b = blocks[j];
-        lines.push(
-          "## " + (nums[j] || String(j + 1)) + "、" + titleFromBlock(b.body, tone)
-        );
-        lines.push("");
-        lines.push("（要点：" + b.body + "）");
-        lines.push("【待核实：补充事实、数据与成效，勿编造】");
-        lines.push("");
-      }
-      return lines.join("\n");
-    }
-
-    var n = Math.min(3, Math.max(2, parseWantGroupCount(s) || 3));
-    var out = [];
-    var gi;
-    for (gi = 0; gi < n; gi++) {
-      out.push({
-        id: String.fromCharCode(65 + gi),
-        note: "参考" + String.fromCharCode(65 + gi),
-        md: mdForTone(gi)
-      });
-    }
-    return out;
-  }
-
-  /** 解析「给我N组」 */
-  function parseWantGroupCount(msg) {
-    var s = String(msg || "");
-    var m = s.match(/([一二三四五六七八九十\d]+)\s*组/);
-    if (!m) {
-      if (/多组|几组|多份参考/.test(s)) return 3;
-      return 0;
-    }
-    var map = {
-      一: 1,
-      二: 2,
-      三: 3,
-      四: 4,
-      五: 5,
-      六: 6,
-      七: 7,
-      八: 8,
-      九: 9,
-      十: 10
-    };
-    var n = map[m[1]] || parseInt(m[1], 10);
-    if (!n || n < 2) return 0;
-    return Math.min(n, 5);
-  }
-
-  /**
-   * 通用：从文本里拆「子主题」列表（不绑死某一类材料/单位名）。
-   * 来源：包含/分管/负责/要点/顿号并列/短句枚举。
-   */
-  function extractThemesUniversal(text) {
-    var raw = String(text || "");
-    var bag = [];
-    function pushOne(x) {
-      var t = String(x || "")
-        .replace(/^[【\[（(]+|[】\]）)]+$/g, "")
-        .replace(/^(包含|含|分管|负责|涉及|要点)[:：\s]*/, "")
-        .replace(/(等大项目|等工作|情况|方面)$/g, "")
-        .replace(/\s+/g, "")
-        .trim();
-      if (t.length < 2 || t.length > 16) return;
-      if (/^(第一|第二|第三|第四|第五|各个|相关|取得|以及|还有|进行)$/.test(t))
-        return;
-      if (bag.indexOf(t) < 0) bag.push(t);
-    }
-    function pushList(chunk) {
-      String(chunk || "")
-        .split(/[、，,；;\/｜|及与和\s]+/)
-        .forEach(pushOne);
-    }
-    var m;
-    var reLead =
-      /(?:包含|含有|含|分管|负责|涉及|涵盖)[:：\s]*([^\n【】。；;]+)/g;
-    while ((m = reLead.exec(raw))) pushList(m[1]);
-    reLead = /要点[:：\s]*([^\n【】]+)/g;
-    while ((m = reLead.exec(raw))) pushList(m[1]);
-    /* 括号里的枚举：（要点：A B C） */
-    reLead = /[（(]([^）)]{4,80})[）)]/g;
-    while ((m = reLead.exec(raw))) {
-      if (/、|,|，|和|与|及/.test(m[1])) pushList(m[1]);
-    }
-    /* 已是对仗句，整句可作主题 */
-    reLead = /(?:^|\n)\s*(?:#{1,4}\s*)?(?:（[一二三四五六七八九十\d]+）)?\s*([^\n]{4,24}，[^\n]{4,24})\s*(?=\n|$)/g;
-    while ((m = reLead.exec(raw))) {
-      if (!/要点|待核实|钉住|请给出/.test(m[1])) pushOne(m[1]);
-    }
-    return bag.slice(0, 6);
-  }
-
-  /** 主题词 → 对仗二级标题（通用模板，不查行业词表） */
-  function pairTitleFromTheme(theme, tone) {
-    var w = String(theme || "").replace(/\s+/g, "");
-    if (/，|,/.test(w) && w.length >= 6 && w.length <= 24) return w;
-    w = w.slice(0, 10);
-    var templates = [
-      ["做实" + w + "工作", "推动落地见效"],
-      ["抓实" + w + "重点", "提升工作质效"],
-      ["统筹" + w + "推进", "增强整体成效"],
-      ["深化" + w + "落实", "确保见行见效"],
-      ["压实" + w + "责任", "盯牢目标进度"]
-    ];
-    var p = templates[tone % templates.length];
-    return p[0] + "，" + p[1];
-  }
-
-  /**
-   * 本地二级兜底（普惠）：只从钉住范围/本节/用户要点抽子主题，再套对仗句式。
-   * 禁止写死某单位、某行业词表。抽不出主题则返回空，让上层提示用户补要点。
-   */
-  function synthL2VariantsForOneSection(msg, optGroups) {
-    var s = String(msg || "");
-    var levels = selectedWriteLevels();
-    var wantH2 = levels.indexOf("h2") >= 0 || /二级/.test(s);
-    if (!wantH2) return [];
-
-    var nGroups = optGroups || parseWantGroupCount(s);
-    if (nGroups < 2) nGroups = 3;
-    nGroups = Math.min(nGroups, 5);
-
-    var pin = workText() || "";
-    var sec = "";
-    var parentTitle = "";
-    var pm = pin.match(/(?:^|\n)\s*([一二三四五六七八九十])、([^\n]+)/);
-    if (pm) {
-      sec = pm[1];
-      parentTitle = String(pm[2] || "")
-        .replace(/\s+/g, "")
-        .replace(/（.*?）/g, "")
-        .slice(0, 28);
-    }
-    if (!sec) {
-      var hm = s.match(/[「"']?\s*([一二三四五六七八九十])\s*、/);
-      if (hm) sec = hm[1];
-    }
-    if (!parentTitle && sec) {
-      try {
-        var full0 = GwDoc.getDocumentText() || "";
-        var re0 = new RegExp("(?:^|\\n)\\s*" + sec + "、([^\\n]+)");
-        var dm = full0.match(re0);
-        if (dm)
-          parentTitle = String(dm[1] || "")
-            .replace(/\s+/g, "")
-            .slice(0, 28);
-      } catch (eDoc) {}
-    }
-    if (!parentTitle) parentTitle = "工作要点";
-
-    /* 上下文：钉住优先；再并本节正文；用户话只作补充枚举来源 */
-    var parts = [pin];
-    if (sec) {
-      try {
-        var full = GwDoc.getDocumentText() || "";
-        var re = new RegExp(
-          "(?:^|\\n)(\\s*" +
-            sec +
-            "、[^\\n]*)([\\s\\S]*?)(?=(?:\\n\\s*[一二三四五六七八九十]、)|$)"
-        );
-        var m = full.match(re);
-        if (m) parts.push(m[1], m[2]);
-      } catch (e1) {}
-    }
-    var i;
-    for (i = state.chat.length - 1; i >= 0 && i >= state.chat.length - 8; i--) {
-      if (state.chat[i] && state.chat[i].role === "user") {
-        parts.push(state.chat[i].text || "");
-      }
-    }
-    parts.push(s);
-    var ctx = parts.join("\n");
-
-    var themes = extractThemesUniversal(pin);
-    if (themes.length < 2) {
-      var more = extractThemesUniversal(ctx);
-      var t;
-      for (t = 0; t < more.length; t++) {
-        if (themes.indexOf(more[t]) < 0) themes.push(more[t]);
-      }
-      themes = themes.slice(0, 6);
-    }
-    if (themes.length < 2) return [];
-
-    var out = [];
-    var gi;
-    for (gi = 0; gi < nGroups; gi++) {
-      var lines = [];
-      if (sec) lines.push("## " + sec + "、" + parentTitle, "");
-      else if (parentTitle) lines.push("## " + parentTitle, "");
-      var nums = ["一", "二", "三", "四", "五", "六"];
-      var j;
-      for (j = 0; j < themes.length; j++) {
-        lines.push(
-          "### （" + nums[j] + "）" + pairTitleFromTheme(themes[j], gi)
-        );
-        lines.push("");
-      }
-      out.push({
-        id: String.fromCharCode(65 + gi),
-        note: "参考" + String.fromCharCode(65 + gi) + " · 二级",
-        md: lines.join("\n")
-      });
-    }
-    return out;
-  }
-
-  /** 从模型 reply 里捞 ### / （一）标题行，合成一版可落稿 md */
+  /** 从模型 reply 里捞标题行，合成可落稿 md（仍来自模型原文，非本地编造） */
   function extractHeadingSkeletonFromReply(reply) {
     var raw = String(reply || "");
     var lines = raw.split(/\r?\n/);
@@ -777,25 +516,7 @@
     return kept.join("\n\n");
   }
 
-  /** 多组撰写兜底：跟芯片层级走 */
-  function synthWriteVariantsFallback(msg) {
-    var levels = selectedWriteLevels();
-    var onlyH2 =
-      levels.indexOf("h2") >= 0 &&
-      levels.indexOf("h1") < 0 &&
-      levels.indexOf("h3") < 0;
-    if (onlyH2 || (/二级/.test(String(msg || "")) && levels.indexOf("h1") < 0)) {
-      var l2 = synthL2VariantsForOneSection(msg);
-      if (l2.length >= 2) return { variants: l2, kind: "l2" };
-    }
-    var l1 = synthVariantsFromUserOutline(msg);
-    if (l1.length >= 2) return { variants: l1, kind: "l1" };
-    var l2b = synthL2VariantsForOneSection(msg);
-    if (l2b.length >= 2) return { variants: l2b, kind: "l2" };
-    return { variants: [], kind: "" };
-  }
-
-  /** 卡片落稿：写入前必须存版本；md 来自对话卡，无中转面板 */
+  /** 卡片落稿：写入前必须存版本；md 来自对话卡（须为模型产出），无中转面板 */
   function resolveChatMd(src) {
     var parts = String(src || "").split(":");
     var mi = parseInt(parts[0], 10);
@@ -1766,16 +1487,7 @@
                 variants = [{ id: "A", note: "从回复提取", md: sk }];
               }
             }
-            if (variants.length < 2) {
-              var fb = synthWriteVariantsFallback(msg);
-              if (fb.variants.length >= 2) {
-                variants = fb.variants;
-                reply =
-                  fb.kind === "l2"
-                    ? "（中转未给出可用多份稿，已按钉住范围生成本地二级标题参考。请用「选定」覆盖写入。）"
-                    : "（中转未给出可用多份稿，已按你描述的结构生成本地提纲参考。）";
-              }
-            }
+            /* 不再本地拼装多份稿：须由模型/中转给出 */
             editMd = "";
           } else if (wantDraft && editMd) {
             variants = [
@@ -1788,22 +1500,6 @@
               variants = [{ id: "1", note: "从回复提取", md: sk1 }];
               reply =
                 "（已从回复提取可落稿标题骨架。请用「选定」或「光标」写入。）";
-            } else {
-              var oneFb = synthWriteVariantsFallback(msg);
-              if (oneFb.variants.length) {
-                var oneShot = oneFb.variants[0];
-                variants = [
-                  {
-                    id: "1",
-                    note: oneShot.note || "结论稿",
-                    md: oneShot.md
-                  }
-                ];
-                reply =
-                  oneFb.kind === "l2"
-                    ? "（中转未返回结构化稿，已按钉住范围生成本地二级标题。请用「选定」写入。）"
-                    : "（中转未返回正文，已生成本地提纲。请用卡片按钮写入。）";
-              }
             }
           }
           var bubble = {
@@ -1823,10 +1519,20 @@
           } else if (wantVars && variants.length === 1) {
             tip("仅得 1 组 · 卡片上直接落稿");
           } else if (wantVars && !variants.length) {
+            var scaffoldHit = /已搭.*骨架|【待补/.test(reply || "");
             bubble.text =
               reply +
-              "\n\n（未解析到可落稿参考。二级需能从钉住范围或话里的「包含/分管/要点」拆出并列子主题；可在输入框补一句子主题列表后重发。）";
-            tip("未解析到多组参考");
+              "\n\n（" +
+              (scaffoldHit
+                ? "中转回了空壳骨架或未带 options。请确认线上中转已更新后重发；本机不会用模板顶替。"
+                : "模型未给出可用多份稿。请勾选「给多份」后重发；本机不会用模板顶替。") +
+              "）";
+            tip(scaffoldHit ? "中转空壳骨架已拒收" : "模型未给出多份稿");
+          } else if (wantDraft && !variants.length) {
+            bubble.text =
+              reply +
+              "\n\n（模型未给出可落稿结论，请勾选「出结论」后重发；本机不会用模板顶替。）";
+            tip("模型未给出结论稿");
           } else if (wantDraft && variants.length) {
             bubble.text =
               reply +
@@ -1845,40 +1551,15 @@
             (GwRelay.friendlyError && GwRelay.friendlyError(e)) ||
             e.message ||
             "失败";
-          /* 中转挂了：有第一点/第二点结构时本地兜底出多份，不白失败 */
-          var localFb =
-            allow && (wantVars || wantDraft)
-              ? synthWriteVariantsFallback(msg)
-              : { variants: [], kind: "" };
-          if (localFb.variants.length >= 2) {
-            var bubbleFail = {
-              role: "assistant",
-              text:
-                "（中转暂时连不上：" +
-                err +
-                "）\n\n" +
-                (localFb.kind === "l2"
-                  ? "已按你指定的标题范围生成本地下一级标题多组参考。请划选对应块后用「选定」或「光标」写入。"
-                  : "已按你描述的结构生成本地提纲参考。请用卡片按钮写入。"),
-              editMd: "",
-              variants: wantVars ? localFb.variants : [localFb.variants[0]]
-            };
-            tip(
-              wantVars
-                ? "中转不可用 · 已生成本地 " + localFb.variants.length + " 组参考"
-                : "中转不可用 · 已生成本地正文稿"
-            );
-            state.chat.push(bubbleFail);
-            renderOpts();
-            syncTabUi();
-          } else {
-            tip(err);
-            state.chat.push({
-              role: "assistant",
-              text: "失败：" + err
-            });
-            renderOpts();
-          }
+          tip(err);
+          state.chat.push({
+            role: "assistant",
+            text:
+              "失败：" +
+              err +
+              "\n\n（中转不可用时不再本地拼装提纲，请恢复中转后重发，由模型生成。）"
+          });
+          renderOpts();
         })
         .then(function () {
           setBusy(false);

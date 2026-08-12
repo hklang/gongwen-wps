@@ -213,17 +213,23 @@
                 (r.json && r.json.edit) ||
                 (r.parsed && r.parsed.edit) ||
                 null;
+              var options =
+                (r.json && r.json.options) ||
+                (r.parsed && r.parsed.options) ||
+                null;
               /* force_final 时 reply 可能仍是整段 JSON */
               if (
                 allowEdit &&
-                !edit &&
                 GwMaterialTools &&
                 GwMaterialTools.parseAgentPayload
               ) {
                 var again = GwMaterialTools.parseAgentPayload(reply, r.json);
-                if (again && again.edit) {
+                if (again && again.edit && !edit) {
                   edit = again.edit;
                   if (again.reply) reply = again.reply;
+                }
+                if (again && again.options && again.options.length) {
+                  options = again.options;
                 }
               }
               if (
@@ -239,6 +245,7 @@
                 ok: true,
                 reply: reply,
                 edit: edit,
+                options: options,
                 read_set: state.readSet.slice(),
                 readMeta: state.readMeta.slice(),
                 steps: state.steps.slice(),
