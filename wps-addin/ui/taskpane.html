@@ -51,20 +51,6 @@
       <div class="ai-empty">划选正文后，在下方输入要求；撰写走对话，精修出方案，校对出问题列表。</div>
     </div>
 
-    <div class="ai-draft-panel" id="aiDraftPanel" hidden>
-      <div class="ai-draft-head">
-        <span class="ai-draft-title">正文稿</span>
-        <span class="ai-draft-note">每次写入前自动存版本</span>
-      </div>
-      <pre class="ai-draft-body" id="aiDraftBody"></pre>
-      <div class="ai-draft-acts" id="aiDraftActs">
-        <button type="button" class="primary" id="aiDraftFull" title="先存版本，再按层级排版覆盖当前全文">整篇排版写入</button>
-        <button type="button" id="aiDraftCursor" title="先存版本，再插入到光标处">写入光标处</button>
-        <button type="button" id="aiDraftSel" title="先存版本，再覆盖当前划选">覆盖选定区</button>
-        <button type="button" id="aiDraftCopy">复制</button>
-      </div>
-    </div>
-
     <div class="ai-compose" id="aiCompose">
       <div class="ai-sel-block" id="aiSelBlock">
         <div class="ai-sel-pop" id="aiSelPop" hidden>
@@ -92,9 +78,11 @@
       </div>
       <div class="ai-cite-bar" id="aiCiteBar" hidden aria-label="已引用素材"></div>
       <div class="ai-read-bar" id="aiReadBar" hidden aria-label="已读材料"></div>
-      <div class="ai-suite-presets" id="aiWriteTips" hidden aria-label="撰写引导">
-        <button type="button" data-write-tip="请帮我做本稿立意：明确读者对象、主旨一句话、以及不写的边界。先讨论立意，少写正文。可参考工程「模板」的结构与口径，并结合「素材」或已引用文件里的背景；勿编造事实。">立意</button>
-        <button type="button" data-write-tip="请按公文习惯搭一、二、三级标题骨架，先出可落稿的目录与要点，少写长段。优先对照「模板」篇章结构；「素材」只用来判断该写哪些板块，勿虚构事实与数据。本稿仅讨论框架，局部改写请到「精修」。">搭架</button>
+      <div class="ai-level-row" id="aiWriteLevels" hidden aria-label="产出层级">
+        <button type="button" class="ai-level" data-write-level="h1" title="一级标题 ##">一级标题</button>
+        <button type="button" class="ai-level" data-write-level="h2" title="二级标题 ###">二级标题</button>
+        <button type="button" class="ai-level" data-write-level="h3" title="三级标题 ####">三级标题</button>
+        <button type="button" class="ai-level" data-write-level="body" title="标题下正文段落">正文</button>
       </div>
       <div class="ai-suite-presets" id="aiSuitePresets" hidden>
         <button type="button" data-suite-preset="请按现有标题充填事实与表述。写数、写事须以「素材」及已引用文件为依据；表述详略可参考「模板」。无依据处标「待核实」，禁止编造数字、单位与结论。">充填</button>
@@ -105,8 +93,16 @@
         <button type="button" data-suite-preset="恰当加入名言警句（勿堆砌）">加名言警句</button>
         <button type="button" data-suite-preset="删繁就简，保留要点">更简洁</button>
       </div>
-      <textarea class="ai-req" id="aiReq" rows="3" placeholder="问点什么，或点上方立意 / 搭架…"></textarea>
+      <textarea class="ai-req" id="aiReq" rows="3" placeholder="补充要求，如组数、侧重…"></textarea>
       <div class="ai-toolbar">
+        <label class="ai-chat-auth" id="aiWantDraftWrap" title="勾选后出可落点的结论；勾选时会自动勾上「给多份」">
+          <input type="checkbox" id="aiWantDraft" />
+          <span>出结论</span>
+        </label>
+        <label class="ai-chat-auth" id="aiWantVariantsWrap" title="勾选后出多组参考；卡片上选落点写入">
+          <input type="checkbox" id="aiWantVariants" />
+          <span>给多份</span>
+        </label>
         <span class="ai-suite-hint" id="aiSuiteHint" hidden>精修：钉住选区后改写选定</span>
         <button type="button" id="aiClearChat">清空</button>
         <span class="spacer"></span>

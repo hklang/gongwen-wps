@@ -97,6 +97,17 @@
     }
     if (status === 429) return "请求过于频繁，请稍后再试";
     if (status === 503) return msg || "服务维护中";
+    if (
+      /Failed to fetch|NetworkError|网络|ECONNREFUSED|timed out|Timeout/i.test(
+        msg
+      )
+    ) {
+      return (
+        "连不上中转（" +
+        (baseUrl() || "未配置地址") +
+        "）。请检查网络、VPN，或在登录里核对中转地址后重试。"
+      );
+    }
     return msg || "请求失败";
   }
 

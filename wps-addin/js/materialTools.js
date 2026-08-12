@@ -238,7 +238,8 @@
       kind: "final",
       reply: String(obj.reply || obj.message || obj.content || raw || "").trim(),
       tool_calls: null,
-      edit: obj.edit || null
+      edit: obj.edit || null,
+      options: Array.isArray(obj.options) ? obj.options : null
     };
   }
 

@@ -61,20 +61,85 @@
   }
 
   /**
-   * 写回选区。Word/WPS 段标记是 \r；若原选区含段末 \r 而新稿没有，
-   * 会吞掉回车、与下一段粘连——必须保留。
+   * 写回选区：先整段删光选定范围，再写入新内容（不残留原文）。
+   * 含 Markdown / 多段时按公文行排版写入。
    */
   function replaceSelection(text, opts) {
     opts = opts || {};
     var s = selection();
+    var start = 0;
+    var end = 0;
+    try {
+      start = s.Start;
+      end = s.End;
+    } catch (ePos) {}
     var raw = String(s.Text == null ? "" : s.Text);
     var cur = cleanText(raw);
-    if (!cur.replace(/\s/g, "")) throw new Error("请先划选要改的正文");
-    var endedWithPara =
-      opts.endsWithPara != null
-        ? !!opts.endsWithPara
-        : /\r$/.test(raw) || /\n$/.test(cur);
-    s.Text = toWordText(text, endedWithPara);
+    if (end <= start || !cur.replace(/\s/g, "")) {
+      throw new Error("请先划选要改的正文");
+    }
+    var src = String(text == null ? "" : text);
+
+    /* 整段清空：用 Range.Text=''，避免 Delete 后残留 */
+    try {
+      doc().Range(start, end).Text = "";
+    } catch (eWipe) {
+      try {
+        s.SetRange(start, end);
+        s.Text = "";
+      } catch (eWipe2) {
+        try {
+          s.Delete();
+        } catch (eDel) {}
+      }
+    }
+    try {
+      s.SetRange(start, start);
+    } catch (eHome) {}
+
+    ensureGongwenDocChrome();
+    typeLinesStyled(splitWriteLines(src));
+    return true;
+  }
+
+  /**
+   * 选中「当前标题整块」= 标题行 + 其下直到同级/更高级标题之前的全部内容。
+   * 用于撰写「选定」覆盖：钉住一级后出二级时，连同旧要点一并替换掉。
+   */
+  function selectHeadingSection() {
+    var s = selection();
+    var p0 = s.Paragraphs.Item(1);
+    var h0 = headingInfo(p0);
+    if (!h0.via) {
+      throw new Error("光标不在标题上");
+    }
+    var startIdx = indexOfParagraph(p0);
+    if (!startIdx) throw new Error("找不到当前段落");
+    var paras = doc().Paragraphs;
+    var n = paras.Count;
+    var endIdx = startIdx;
+    var j;
+    for (j = startIdx + 1; j <= n; j++) {
+      var hj = headingInfo(paras.Item(j));
+      if (hj.via && hj.lvl <= h0.lvl) break;
+      endIdx = j;
+    }
+    var a = paras.Item(startIdx).Range.Start;
+    var b = paras.Item(endIdx).Range.End;
+    try {
+      if (b > a + 1) b = b - 1;
+    } catch (e) {}
+    selectRange(a, b);
+    return {
+      heading: h0,
+      from: startIdx,
+      to: endIdx,
+      text: getSelectionText(),
+      start: a,
+      end: b,
+      endsWithPara: true,
+      info: getSelectionInfo()
+    };
   }
 
   /**
@@ -121,70 +186,422 @@
     return cleanText(out);
   }
 
-  function trySetParaStyle(para, names) {
-    var i;
-    for (i = 0; i < names.length; i++) {
-      try {
-        para.Style = names[i];
-        return names[i];
-      } catch (e) {}
-    }
-    return "";
+  /**
+   * 公文落稿排版（对标 Word/tools/政府公文排版规范.md + md2docx.py）
+   * 不用 Word「标题1/2」，直接设字体/字号/加黑/对齐/首行缩进/行距。
+   */
+  var WD_ALIGN_CENTER = 1;
+  var WD_ALIGN_RIGHT = 2;
+  var WD_ALIGN_JUSTIFY = 3;
+  var WD_LINE_EXACTLY = 3;
+  var FONT_FALLBACKS = {
+    宋体: ["宋体", "SimSun"],
+    黑体: ["黑体", "SimHei"],
+    楷体: ["楷体", "楷体_GB2312", "KaiTi", "STKaiti"],
+    仿宋: ["仿宋", "仿宋_GB2312", "FangSong", "STFangsong"]
+  };
+
+  function paraContentRange(para) {
+    var r = para.Range;
+    var a = r.Start;
+    var b = r.End;
+    try {
+      if (b > a) b = b - 1;
+    } catch (e) {}
+    return doc().Range(a, b);
   }
 
-  function styleNamesForLevel(lvl) {
-    if (lvl === 1) return ["标题 1", "标题1", "Heading 1", "Heading1"];
-    if (lvl === 2) return ["标题 2", "标题2", "Heading 2", "Heading2"];
-    if (lvl === 3) return ["标题 3", "标题3", "Heading 3", "Heading3"];
-    return ["正文", "Normal", "本文"];
+  function setRunFont(font, family, sizePt, bold) {
+    var list = FONT_FALLBACKS[family] || [family];
+    var i;
+    for (i = 0; i < list.length; i++) {
+      try {
+        font.Name = list[i];
+        break;
+      } catch (e1) {}
+    }
+    for (i = 0; i < list.length; i++) {
+      try {
+        font.NameFarEast = list[i];
+        break;
+      } catch (e2) {}
+    }
+    try {
+      font.Size = sizePt;
+    } catch (e3) {}
+    try {
+      font.Bold = bold ? 1 : 0;
+    } catch (e4) {}
+  }
+
+  function applyGongwenPara(para, spec) {
+    var pf = para.Format || para.ParagraphFormat;
+    try {
+      pf.LineSpacingRule = WD_LINE_EXACTLY;
+      pf.LineSpacing = 30;
+      pf.SpaceBefore = 0;
+      pf.SpaceAfter = 0;
+    } catch (eLs) {}
+    try {
+      pf.CharacterUnitFirstLineIndent =
+        spec.indentChars != null ? spec.indentChars : 0;
+    } catch (eInd) {
+      try {
+        pf.FirstLineIndent =
+          (spec.indentChars || 0) > 0
+            ? app().CentimetersToPoints(0.74)
+            : 0;
+      } catch (eInd2) {}
+    }
+    try {
+      pf.Alignment = spec.align;
+    } catch (eAl) {}
+    try {
+      setRunFont(
+        paraContentRange(para).Font,
+        spec.font,
+        spec.size,
+        !!spec.bold
+      );
+    } catch (eF) {}
+  }
+
+  function applyPrefixBold(para, prefixLen) {
+    if (!prefixLen || prefixLen < 1) return;
+    try {
+      var r = para.Range;
+      var a = r.Start;
+      var boldRng = doc().Range(a, a + prefixLen);
+      boldRng.Font.Bold = 1;
+      var restEnd = r.End > a + prefixLen ? r.End - 1 : a + prefixLen;
+      if (restEnd > a + prefixLen) {
+        doc().Range(a + prefixLen, restEnd).Font.Bold = 0;
+      }
+    } catch (e) {}
   }
 
   /**
-   * 光标处插入多段文本（保留周围既有样式意图；新段按公文序号尝试套标题）。
+   * 分类一行 md（与 md2docx 对齐）。skip=空行/--- 不落段。
    */
-  function insertAtCursor(text) {
-    var s = selection();
-    var lines = String(text == null ? "" : text)
+  function classifyMdLine(line) {
+    var t = String(line == null ? "" : line)
+      .replace(/^\s+/, "")
+      .replace(/\s+$/, "");
+    if (!t || t === "---") return { kind: "skip" };
+
+    var m;
+    m = t.match(/^#\s+(.+)$/);
+    if (m)
+      return {
+        kind: "h1",
+        text: m[1],
+        font: "宋体",
+        size: 22,
+        bold: true,
+        align: WD_ALIGN_CENTER,
+        indentChars: 0,
+        blankAfter: true
+      };
+    m = t.match(/^##\s+(.+)$/);
+    if (m)
+      return {
+        kind: "h2",
+        text: m[1],
+        font: "黑体",
+        size: 16,
+        bold: false,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 2
+      };
+    m = t.match(/^###\s+(.+)$/);
+    if (m)
+      return {
+        kind: "h3",
+        text: m[1],
+        font: "楷体",
+        size: 16,
+        bold: true,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 2
+      };
+    m = t.match(/^####\s+(.+)$/);
+    if (m)
+      return {
+        kind: "h4",
+        text: m[1],
+        font: "仿宋",
+        size: 16,
+        bold: true,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 0
+      };
+    m = t.match(/^\*（(.+)）\*$/);
+    if (m)
+      return {
+        kind: "note",
+        text: "（" + m[1] + "）",
+        font: "仿宋",
+        size: 16,
+        bold: false,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 0
+      };
+    m = t.match(/^<div\s+align=["']right["']\s*>(.+)<\/div>$/i);
+    if (m)
+      return {
+        kind: "right",
+        text: m[1],
+        font: "仿宋",
+        size: 16,
+        bold: false,
+        align: WD_ALIGN_RIGHT,
+        indentChars: 0
+      };
+    m = t.match(/^\*\*(.+?[。：])\*\*\s*(.+)$/);
+    if (m)
+      return {
+        kind: "mix",
+        text: m[1] + m[2],
+        prefix: m[1],
+        rest: m[2],
+        font: "仿宋",
+        size: 16,
+        bold: false,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 2
+      };
+    m = t.match(/^\*\*(.+)\*\*$/);
+    if (m)
+      return {
+        kind: "boldBody",
+        text: m[1],
+        font: "仿宋",
+        size: 16,
+        bold: true,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 2
+      };
+
+    /* 无井号时按公文序号兜底：一、→一级；（一）→二级 */
+    var gw = gongwenLevel(t);
+    if (gw === 1)
+      return {
+        kind: "h2",
+        text: t,
+        font: "黑体",
+        size: 16,
+        bold: false,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 2
+      };
+    if (gw === 2)
+      return {
+        kind: "h3",
+        text: t,
+        font: "楷体",
+        size: 16,
+        bold: true,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 2
+      };
+    if (gw === 3)
+      return {
+        kind: "h4",
+        text: t,
+        font: "仿宋",
+        size: 16,
+        bold: true,
+        align: WD_ALIGN_JUSTIFY,
+        indentChars: 0
+      };
+
+    return {
+      kind: "body",
+      text: t,
+      font: "仿宋",
+      size: 16,
+      bold: false,
+      align: WD_ALIGN_JUSTIFY,
+      indentChars: 2
+    };
+  }
+
+  function splitWriteLines(text) {
+    return String(text == null ? "" : text)
       .replace(/\r\n/g, "\n")
       .replace(/\r/g, "\n")
       .split("\n");
+  }
+
+  /** 从当前选区起按 md 行写入并套公文格式（空行跳过，不落空段） */
+  function typeLinesStyled(lines) {
+    var s = selection();
+    var wrote = 0;
     var i;
     for (i = 0; i < lines.length; i++) {
-      if (i > 0) {
+      var spec = classifyMdLine(lines[i]);
+      if (spec.kind === "skip") continue;
+      if (wrote > 0) {
         try {
           s.TypeParagraph();
         } catch (eP) {
-          s.Text = s.Text + "\r";
+          try {
+            s.Text = String(s.Text || "") + "\r";
+          } catch (eP2) {}
         }
       }
-      var line = lines[i];
-      if (line) {
+      if (spec.text) {
         try {
-          s.TypeText(line);
+          s.TypeText(spec.text);
         } catch (eT) {
-          s.Text = String(s.Text || "") + line;
+          try {
+            s.Text = String(s.Text || "") + spec.text;
+          } catch (eT2) {}
         }
       }
       try {
         var para = s.Paragraphs.Item(1);
-        var lvl = gongwenLevel(line);
-        if (lvl > 0) trySetParaStyle(para, styleNamesForLevel(lvl));
+        applyGongwenPara(para, spec);
+        if (spec.kind === "mix") applyPrefixBold(para, (spec.prefix || "").length);
       } catch (eS) {}
+      wrote++;
+      if (spec.blankAfter) {
+        try {
+          s.TypeParagraph();
+          applyGongwenPara(s.Paragraphs.Item(1), {
+            font: "仿宋",
+            size: 16,
+            bold: false,
+            align: WD_ALIGN_JUSTIFY,
+            indentChars: 0
+          });
+        } catch (eBlank) {}
+      }
     }
+    return wrote;
+  }
+
+  function approxEqCm(points, cmTarget) {
+    try {
+      var one = app().CentimetersToPoints(1);
+      if (!one) return false;
+      return Math.abs(points / one - cmTarget) < 0.25;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function marginsLookGongwen(ps) {
+    try {
+      return (
+        approxEqCm(ps.TopMargin, 2.54) &&
+        approxEqCm(ps.BottomMargin, 2.54) &&
+        approxEqCm(ps.LeftMargin, 3.17) &&
+        approxEqCm(ps.RightMargin, 3.17)
+      );
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function footerHasPageNumber(footer) {
+    try {
+      if (footer.PageNumbers && footer.PageNumbers.Count > 0) return true;
+    } catch (e1) {}
+    try {
+      var fields = footer.Range.Fields;
+      var i;
+      for (i = 1; i <= fields.Count; i++) {
+        /* wdFieldPage = 33 */
+        if (Number(fields.Item(i).Type) === 33) return true;
+      }
+    } catch (e2) {}
+    return false;
+  }
+
+  /**
+   * 文档级版式无感补齐：页边距 / 页码只在「还没有」时静默补一次，
+   * 已符合规范则跳过，不打扰、不重复插入。
+   */
+  function ensureGongwenDocChrome() {
+    var d = doc();
+    var s = selection();
+    var savedStart = null;
+    var savedEnd = null;
+    try {
+      savedStart = s.Start;
+      savedEnd = s.End;
+    } catch (eSave) {}
+
+    try {
+      var ps = d.PageSetup;
+      var cm = function (n) {
+        return app().CentimetersToPoints(n);
+      };
+      if (!marginsLookGongwen(ps)) {
+        try {
+          ps.PageWidth = cm(21);
+          ps.PageHeight = cm(29.7);
+        } catch (eSz) {}
+        try {
+          ps.TopMargin = cm(2.54);
+          ps.BottomMargin = cm(2.54);
+          ps.LeftMargin = cm(3.17);
+          ps.RightMargin = cm(3.17);
+        } catch (eM) {}
+      }
+    } catch (ePs) {}
+
+    try {
+      var footer = d.Sections.Item(1).Footers.Item(1);
+      if (!footerHasPageNumber(footer)) {
+        try {
+          footer.LinkToPrevious = false;
+        } catch (eL) {}
+        /* wdAlignPageNumberCenter = 1；FirstPage=true 首页也显示 */
+        var pn = null;
+        try {
+          pn = footer.PageNumbers.Add(1, true);
+        } catch (eAdd) {
+          try {
+            pn = footer.PageNumbers.Add(1);
+          } catch (eAdd2) {}
+        }
+        try {
+          if (pn && pn.Select) pn.Select();
+          setRunFont(selection().Font, "宋体", 10.5, false);
+        } catch (eFont) {
+          try {
+            setRunFont(footer.Range.Font, "宋体", 10.5, false);
+            footer.Range.ParagraphFormat.Alignment = WD_ALIGN_CENTER;
+          } catch (eFont2) {}
+        }
+      }
+    } catch (ePn) {}
+
+    try {
+      if (savedStart != null && savedEnd != null) {
+        selectRange(savedStart, savedEnd);
+      }
+    } catch (eRest) {}
+  }
+
+  /**
+   * 光标处按公文规范插入（剥 Markdown，套字体/缩进/行距）。
+   * 文档级页边距/页码：缺则无感补一次。
+   */
+  function insertAtCursor(text) {
+    ensureGongwenDocChrome();
+    typeLinesStyled(splitWriteLines(text));
     return true;
   }
 
   /**
-   * 整篇按行写入并尝试套标题样式。调用前须已存版本且用户确认。
+   * 整篇按公文规范写入。调用前须已存版本且用户确认。
+   * 文档级页边距/页码：缺则无感补一次；段落格式每次只套写入段。
    */
   function writeDocumentStyled(text) {
-    var lines = String(text == null ? "" : text)
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "\n")
-      .split("\n");
-    while (lines.length && !String(lines[lines.length - 1] || "").replace(/\s/g, "")) {
-      lines.pop();
-    }
+    var lines = splitWriteLines(text);
     var d = doc();
     var s = selection();
     try {
@@ -196,27 +613,22 @@
     try {
       s.HomeKey(6);
     } catch (eHome) {}
-    var i;
-    for (i = 0; i < lines.length; i++) {
-      if (i > 0) {
-        try {
-          s.TypeParagraph();
-        } catch (eP2) {}
-      }
-      var line = lines[i];
-      if (line) {
-        try {
-          s.TypeText(line);
-        } catch (eT2) {
-          s.Text = String(s.Text || "") + line;
-        }
-      }
-      try {
-        var para = s.Paragraphs.Item(1);
-        trySetParaStyle(para, styleNamesForLevel(gongwenLevel(line)));
-      } catch (eSt) {}
-    }
-    return { ok: true, lines: lines.length };
+    ensureGongwenDocChrome();
+    var n = typeLinesStyled(lines);
+    return { ok: true, lines: n };
+  }
+
+  /** 纯文本落点：去掉 Markdown 标记，保留可见正文 */
+  function mdToPlainLines(text) {
+    return splitWriteLines(text)
+      .map(function (ln) {
+        var c = classifyMdLine(ln);
+        return c.kind === "skip" ? null : c.text || "";
+      })
+      .filter(function (t) {
+        return t != null && String(t).length > 0;
+      })
+      .join("\n");
   }
 
   function styleNameOf(p) {
@@ -563,6 +975,7 @@
     listHeadings: listHeadings,
     listSiblingHeadings: listSiblingHeadings,
     selectHeadingBody: selectHeadingBody,
+    selectHeadingSection: selectHeadingSection,
     selectSiblingHeadings: selectSiblingHeadings,
     selectSiblingHeadingsByIndex: selectSiblingHeadingsByIndex,
     selectHeadingLineByIndex: selectHeadingLineByIndex,
