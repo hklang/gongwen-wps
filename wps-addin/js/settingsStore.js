@@ -1,5 +1,5 @@
 /**
- * 设置 v2：场景引擎 + 词库 + 事实；本机 PluginStorage / localStorage
+ * 设置 v2：场景引擎 + 词库 + 数据核验表；本机 PluginStorage / localStorage
  * 见 specs/2026-08-13-WPS设置系统设计.md
  */
 (function (global) {

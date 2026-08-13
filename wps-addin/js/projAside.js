@@ -421,7 +421,17 @@
         return;
       }
       if (e.target.closest("[data-cloud-templates]")) {
-        setStatus("「☁ 云端」待接双轨模板", "warn");
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.GwCloudTemplates && GwCloudTemplates.open) {
+          if (!GwCloudTemplates.open()) {
+            setStatus("无法打开云端模板窗", "err");
+          } else {
+            setStatus("已打开云端模板", "ok");
+          }
+        } else {
+          setStatus("云端模板模块未加载", "err");
+        }
         return;
       }
       if (e.target.closest("[data-save-version]")) {
@@ -502,6 +512,35 @@
     });
   }
 
+  function consumeProjRefreshFlag() {
+    try {
+      var k = "gongwen.proj.need_refresh";
+      var v = "";
+      try {
+        if (window.Application && Application.PluginStorage) {
+          v = Application.PluginStorage.getItem(k) || "";
+        }
+      } catch (eA) {}
+      if (!v) {
+        try {
+          v = localStorage.getItem(k) || "";
+        } catch (e0) {}
+      }
+      if (!v) return false;
+      try {
+        if (window.Application && Application.PluginStorage) {
+          Application.PluginStorage.setItem(k, "");
+        }
+      } catch (e1) {}
+      try {
+        localStorage.setItem(k, "");
+      } catch (e2) {}
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   function init() {
     bindEvents();
     try {
@@ -515,6 +554,14 @@
     } else if (GwProject.isManualRoot && GwProject.isManualRoot()) {
       setStatus("手动改绑中（刷新仍用此根）", "");
     }
+    try {
+      window.addEventListener("focus", function () {
+        if (consumeProjRefreshFlag()) {
+          renderProjectFiles(true);
+          setStatus("模板列表已刷新", "ok");
+        }
+      });
+    } catch (eF) {}
   }
 
   if (document.readyState === "loading") {

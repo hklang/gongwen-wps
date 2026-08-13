@@ -11,31 +11,6 @@
     { id: "个人写作", tip: "错别字、标点、词库" }
   ];
 
-  function engineLabel(id) {
-    var hit = null;
-    if (global.GwSettings && GwSettings.ENGINE_LABELS) {
-      GwSettings.ENGINE_LABELS.forEach(function (e) {
-        if (e.id === id) hit = e.name;
-      });
-    }
-    return hit || id;
-  }
-
-  function enginesForScene(sceneId) {
-    var map = (draft && draft.proof && draft.proof.sceneEngineMap) || {};
-    var list =
-      map[sceneId] ||
-      (GwSettings.SCENES_DEFAULT && GwSettings.SCENES_DEFAULT[sceneId]) ||
-      [];
-    return list.slice();
-  }
-
-  function enginesSummary(sceneId) {
-    return enginesForScene(sceneId)
-      .map(engineLabel)
-      .join("、");
-  }
-
   var ENG_HINT = {
     punctuation: "本地",
     format: "本地",
@@ -45,7 +20,7 @@
     sensitive: "政治规范",
     style: "文风",
     logic: "前后矛盾",
-    dataverify: "对照事实表",
+    dataverify: "对照本机数字表",
     duplicate: "跨段同事项"
   };
 
@@ -110,6 +85,34 @@
     draft.proof.sceneEngineMap[draft.proof.scene] = list;
   }
 
+  function engineCheckboxesHtml(selectedIds) {
+    var sel = selectedIds || [];
+    return GwSettings.ENGINE_LABELS.map(function (e) {
+      var on = sel.indexOf(e.id) >= 0;
+      return (
+        '<label class="gw-set-eng"><input type="checkbox" data-eng="' +
+        e.id +
+        '"' +
+        (on ? " checked" : "") +
+        "><span><b>" +
+        e.name +
+        "</b><small>" +
+        (ENG_HINT[e.id] || e.group) +
+        "</small></span></label>"
+      );
+    }).join("");
+  }
+
+  function bindEngineChecks(rootId) {
+    var root = $(rootId);
+    if (!root) return;
+    root.onchange = function (e) {
+      var el = e.target;
+      if (!el || !el.getAttribute("data-eng")) return;
+      setEngineOn(el.getAttribute("data-eng"), !!el.checked);
+    };
+  }
+
   function accountHint() {
     try {
       var t = global.GwRelay && GwRelay.tokens && GwRelay.tokens();
@@ -142,22 +145,21 @@
 
   function renderProof(body) {
     var curScene = draft.proof.scene || "政务公文";
-    var curSum = enginesSummary(curScene) || "（无）";
     body.innerHTML =
       "<h3>校对</h3>" +
-      '<p class="gw-set-desc">场景 = 一套检查配方。点选后「开始校对」按该配方跑；与词库、事实口径分工见下方说明。</p>' +
+      '<p class="gw-set-desc">场景 = 一套检查配方。先选哪类稿，再勾本场景要跑哪些项；与词库、数据核验表配合，不是三选一。</p>' +
       '<div class="gw-set-block"><h4>我在写哪类稿</h4>' +
       '<div class="gw-set-scene" id="gwScene"></div>' +
       '<div class="gw-set-scene-detail">' +
-      "<b>当前「" +
+      "<b>「" +
       escapeHtml(curScene) +
-      "」将检查：</b>" +
-      '<p class="gw-set-scene-list">' +
-      escapeHtml(curSum) +
-      "</p>" +
-      '<button type="button" class="gw-set-linkish" id="gwGotoAdv">去高级微调检查项…</button>' +
+      "」检查项</b>" +
+      '<p class="gw-set-hint gw-set-scene-eng-hint">勾选只写入当前场景；换场景不丢各自配方。点确定后生效。</p>' +
+      '<div class="gw-set-engines" id="gwEngProof">' +
+      engineCheckboxesHtml(currentEngines()) +
       "</div>" +
-      '<p class="gw-set-hint">场景只决定开哪些检查引擎。词库管误报/必纠；事实口径给「数据核验」用——三者配合，不是三选一。</p></div>' +
+      '<button type="button" class="gw-set-linkish" id="gwSceneReset">恢复本场景默认</button>' +
+      "</div></div>" +
       '<div class="gw-set-block"><h4>查得严不严</h4>' +
       '<div class="gw-set-sens" id="gwSens">' +
       '<button type="button" data-sens="strict"><b>严格</b><small>宁可误报不可漏报</small></button>' +
@@ -181,9 +183,7 @@
         s.id +
         "</b><small>" +
         escapeHtml(s.tip) +
-        '</small><span class="gw-set-scene-engs">' +
-        escapeHtml(enginesSummary(s.id)) +
-        "</span></button>"
+        "</small></button>"
       );
     }).join("");
     sc.onclick = function (e) {
@@ -192,8 +192,12 @@
       draft.proof.scene = b.getAttribute("data-scene");
       render();
     };
-    $("gwGotoAdv").onclick = function () {
-      pane = "advanced";
+    bindEngineChecks("gwEngProof");
+    $("gwSceneReset").onclick = function () {
+      var def =
+        (GwSettings.SCENES_DEFAULT && GwSettings.SCENES_DEFAULT[curScene]) ||
+        [];
+      draft.proof.sceneEngineMap[curScene] = def.slice();
       render();
     };
     qsa("#gwSens [data-sens]").forEach(function (btn) {
@@ -306,7 +310,6 @@
       ];
     }
     var fg = draft.proof.factGroups[0];
-    var dvOn = currentEngines().indexOf("dataverify") >= 0;
     var factLis = (fg.items || [])
       .map(function (it, i) {
         return (
@@ -322,15 +325,9 @@
       })
       .join("");
     body.innerHTML =
-      "<h3>事实口径</h3>" +
-      '<p class="gw-set-desc">本机固定数字/口径，校对时与正文对照。不上云。</p>' +
-      '<div class="gw-set-block">' +
-      '<label class="gw-set-check"><input type="checkbox" id="gwDvOn"' +
-      (dvOn ? " checked" : "") +
-      "> 校对时启用「数据核验」</label>" +
-      '<p class="gw-set-hint">有条目并勾选后才会按表对数；无条目时不打扰。</p>' +
-      "</div>" +
-      '<div class="gw-set-block"><h4>口径条目</h4>' +
+      "<h3>数据核验</h3>" +
+      '<p class="gw-set-desc">维护本机对照数字表。是否启用请在「校对」检查项里勾选「数据核验」；无条目时即使勾了也不打扰。不上云。</p>' +
+      '<div class="gw-set-block"><h4>对照条目</h4>' +
       '<div class="gw-set-add">' +
       '<input type="text" id="gwFiLabel" placeholder="标签 如营收" />' +
       '<input type="text" id="gwFiValue" placeholder="值" />' +
@@ -340,9 +337,6 @@
       (factLis ||
         '<li style="color:#a8a29e">暂无 · 例如：营收 → 12.3 → 亿元</li>') +
       "</ul></div>";
-    $("gwDvOn").onchange = function () {
-      setEngineOn("dataverify", !!$("gwDvOn").checked);
-    };
     $("gwFiAdd").onclick = function () {
       var label = ($("gwFiLabel").value || "").trim();
       var value = ($("gwFiValue").value || "").trim();
@@ -354,9 +348,6 @@
         unit: unit,
         aliases: []
       });
-      if (currentEngines().indexOf("dataverify") < 0) {
-        setEngineOn("dataverify", true);
-      }
       $("gwFiLabel").value = "";
       $("gwFiValue").value = "";
       $("gwFiUnit").value = "";
@@ -374,25 +365,9 @@
   }
 
   function renderAdvanced(body) {
-    var eng = currentEngines();
-    var engHtml = GwSettings.ENGINE_LABELS.map(function (e) {
-      var on = eng.indexOf(e.id) >= 0;
-      return (
-        '<label class="gw-set-eng"><input type="checkbox" data-eng="' +
-        e.id +
-        '"' +
-        (on ? " checked" : "") +
-        "><span><b>" +
-        e.name +
-        "</b><small>" +
-        (ENG_HINT[e.id] || e.group) +
-        "</small></span></label>"
-      );
-    }).join("");
-
     body.innerHTML =
       "<h3>高级</h3>" +
-      '<p class="gw-set-desc">精修习惯与检查细项。一般不用改。</p>' +
+      '<p class="gw-set-desc">精修习惯。校对检查项请到左侧「校对」按场景勾选。</p>' +
       '<div class="gw-set-block"><h4>精修习惯</h4>' +
       '<div class="gw-set-row"><span class="gw-set-label">默认套数</span>' +
       '<select id="gwSuiteCount">' +
@@ -420,14 +395,7 @@
       ">新稿</option></select></div>" +
       '<label class="gw-set-check"><input type="checkbox" id="gwReqSel"' +
       (draft.suite.requireSelection !== false ? " checked" : "") +
-      "> 精修必须先钉住选区</label></div>" +
-      '<div class="gw-set-block"><h4>本场景检查项（' +
-      escapeHtml(draft.proof.scene) +
-      "）</h4>" +
-      '<div class="gw-set-engines" id="gwEng">' +
-      engHtml +
-      "</div>" +
-      '<p class="gw-set-hint">只影响当前场景。事实口径请到左侧「事实口径」页。</p></div>';
+      "> 精修必须先钉住选区</label></div>";
 
     $("gwSuiteCount").onchange = function () {
       draft.suite.count = Number($("gwSuiteCount").value) || 3;
@@ -437,11 +405,6 @@
     };
     $("gwReqSel").onchange = function () {
       draft.suite.requireSelection = !!$("gwReqSel").checked;
-    };
-    $("gwEng").onchange = function (e) {
-      var el = e.target;
-      if (!el || !el.getAttribute("data-eng")) return;
-      setEngineOn(el.getAttribute("data-eng"), !!el.checked);
     };
   }
 

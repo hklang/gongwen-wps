@@ -306,6 +306,67 @@
     return request("POST", "/api/chat", body);
   }
 
+  function genres() {
+    return request("GET", "/api/genres", null, false);
+  }
+
+  function listTemplates(categoryCode) {
+    var q = encodeURIComponent(String(categoryCode || "").trim());
+    return request("GET", "/api/templates?category=" + q, null, false);
+  }
+
+  function getTemplate(code, categoryCode) {
+    var q =
+      "?code=" +
+      encodeURIComponent(String(code || "").trim()) +
+      "&category=" +
+      encodeURIComponent(String(categoryCode || "").trim());
+    return ensureAccess().then(function (ok) {
+      if (!ok) {
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        return Promise.reject(err);
+      }
+      return request("GET", "/api/template" + q);
+    });
+  }
+
+  function listUserTemplates() {
+    return ensureAccess().then(function (ok) {
+      if (!ok) {
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        return Promise.reject(err);
+      }
+      return request("GET", "/api/user/templates");
+    });
+  }
+
+  function getUserTemplate(id) {
+    return ensureAccess().then(function (ok) {
+      if (!ok) {
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        return Promise.reject(err);
+      }
+      return request(
+        "GET",
+        "/api/user/templates?id=" + encodeURIComponent(String(id || ""))
+      );
+    });
+  }
+
+  function mutateUserTemplate(body) {
+    return ensureAccess().then(function (ok) {
+      if (!ok) {
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        return Promise.reject(err);
+      }
+      return request("POST", "/api/user/templates", body || {});
+    });
+  }
+
   global.GwRelay = {
     KEYS: KEYS,
     baseUrl: baseUrl,
@@ -325,6 +386,12 @@
     quota: quota,
     suggest: suggest,
     proofread: proofread,
-    chat: chat
+    chat: chat,
+    genres: genres,
+    listTemplates: listTemplates,
+    getTemplate: getTemplate,
+    listUserTemplates: listUserTemplates,
+    getUserTemplate: getUserTemplate,
+    mutateUserTemplate: mutateUserTemplate
   };
 })(window);

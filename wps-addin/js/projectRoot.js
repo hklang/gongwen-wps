@@ -1219,6 +1219,68 @@
     }
   }
 
+  function safeTemplateFileName(categoryCode, title) {
+    var code =
+      String(categoryCode || "tpl")
+        .replace(/[^\w\-]+/g, "")
+        .slice(0, 32) || "tpl";
+    var base =
+      String(title || "骨架")
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 40) || "骨架";
+    return code + "-" + base + ".md";
+  }
+
+  /**
+   * 云端骨架落到本机「模板/」（只落盘，不改当前 docx）。
+   * opts: { title, category|categoryCode, body_md|bodyMd, force }
+   */
+  function landTemplate(opts) {
+    var o = opts || {};
+    var resolved = resolveRoot();
+    var root = resolved && resolved.root;
+    if (!root) {
+      return { ok: false, error: "请先打开已保存的文稿或绑定工程文件夹" };
+    }
+    var layout = ensureProjectLayout(root);
+    if (!layout.ok) {
+      return { ok: false, error: layout.error || "无法创建模板目录" };
+    }
+    var body = String(o.body_md || o.bodyMd || "").trim();
+    if (!body) return { ok: false, error: "模板正文为空" };
+    var code = String(o.category || o.categoryCode || "tpl").trim() || "tpl";
+    var title = String(o.title || "骨架").trim() || "骨架";
+    var force = !!o.force;
+    var name = safeTemplateFileName(code, title);
+    var abs = joinRoot(root, TEMPLATE_DIR + "\\" + name);
+    var rel = (TEMPLATE_DIR + "/" + name).replace(/\\/g, "/");
+    if (fsExists(abs) && !force) {
+      return {
+        ok: false,
+        need_confirm: true,
+        path: rel,
+        error: "已存在同名模板"
+      };
+    }
+    var text = body.endsWith("\n") ? body : body + "\n";
+    if (!fsWriteText(abs, text)) {
+      return { ok: false, error: "写入失败：" + abs };
+    }
+    try {
+      storeSet("gongwen.proj.need_refresh", String(Date.now()));
+    } catch (eFlag) {}
+    return {
+      ok: true,
+      path: rel,
+      absolute: abs,
+      title: title,
+      category: code
+    };
+  }
+
   global.GwProject = {
     ROOT_KEY: ROOT_KEY,
     CITE_KEY: CITE_KEY,
@@ -1262,6 +1324,8 @@
     titleOf: titleOf,
     getFso: getFso,
     getWpsFs: getWpsFs,
-    hasDiskApi: hasDiskApi
+    hasDiskApi: hasDiskApi,
+    landTemplate: landTemplate,
+    safeTemplateFileName: safeTemplateFileName
   };
 })(window);

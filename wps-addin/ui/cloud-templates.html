@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>公文助手 · 云端模板</title>
+  <link rel="stylesheet" href="./cloud-templates.css" />
+  <script type="text/javascript" src="../js/util.js"></script>
+  <script type="text/javascript" src="../js/userPrefs.js"></script>
+  <script type="text/javascript" src="../js/relay.js"></script>
+  <script type="text/javascript" src="../js/projectRoot.js"></script>
+  <script type="text/javascript" src="../js/cloudTemplatesApp.js"></script>
+  <script type="text/javascript">
+    if (window.GwUserPrefs) GwUserPrefs.watchWindow("cloudTemplates");
+  </script>
+</head>
+<body>
+  <div class="gw-tpl-app" id="gwTplApp">
+    <header class="gw-tpl-head">
+      <div class="gw-tpl-head-main">
+        <strong>云端模板</strong>
+        <p class="gw-tpl-sub">官方只读；「我的」跟账号。下载到本机「模板/」后使用。</p>
+        <div class="gw-tpl-tabs" id="gwTplTabs" role="tablist">
+          <button type="button" class="on" data-rail="official">官方</button>
+          <button type="button" data-rail="mine">我的</button>
+        </div>
+      </div>
+      <div class="gw-tpl-head-actions">
+        <button type="button" class="gw-tpl-ico" id="gwTplSearchBtn" title="搜索文种或模板" aria-label="搜索" hidden>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3-3"/></svg>
+        </button>
+        <button type="button" class="gw-tpl-x" id="gwTplCloseX" aria-label="关闭">×</button>
+      </div>
+    </header>
+    <div class="gw-tpl-search-pop" id="gwTplSearchPop" hidden>
+      <input type="search" id="gwTplSearch" placeholder="搜索文种或模板名…" autocomplete="off" />
+      <button type="button" id="gwTplSearchClear" title="清除并关闭">关闭</button>
+    </div>
+    <div class="gw-tpl-body" id="gwTplBodyOfficial">
+      <aside class="gw-tpl-groups" id="gwTplGroups" aria-label="文种分组"></aside>
+      <div class="gw-tpl-mid">
+        <div class="gw-tpl-cats" id="gwTplCats" aria-label="文种"></div>
+        <div class="gw-tpl-list" id="gwTplList" aria-label="模板列表"></div>
+      </div>
+      <div class="gw-tpl-preview-wrap">
+        <div class="gw-tpl-preview-head" id="gwTplPrevHead">选择左侧模板预览</div>
+        <pre class="gw-tpl-preview" id="gwTplPrev"></pre>
+      </div>
+    </div>
+    <div class="gw-tpl-body gw-tpl-body-mine" id="gwTplBodyMine" hidden>
+      <div class="gw-tpl-mine-only" id="gwTplMineListPane">
+        <div class="gw-tpl-list" id="gwTplMineList"></div>
+      </div>
+      <div class="gw-tpl-mine-edit" id="gwTplMineEdit" hidden>
+        <header class="gw-tpl-edit-head">
+          <strong id="gwMineEditTitle">编辑模板</strong>
+          <button type="button" id="gwMineEditClose">返回列表</button>
+        </header>
+        <input type="text" class="gw-tpl-edit-title" id="gwMineTitle" placeholder="模板标题" autocomplete="off" />
+        <textarea class="gw-tpl-edit-body" id="gwMineBody" placeholder="在此编写我的模板（Markdown）…"></textarea>
+        <footer class="gw-tpl-edit-foot">
+          <button type="button" id="gwMineDel">删除</button>
+          <button type="button" id="gwMineLand">下载到本机</button>
+          <button type="button" class="primary" id="gwMineSave">保存到云端</button>
+        </footer>
+      </div>
+    </div>
+    <footer class="gw-tpl-foot">
+      <span class="gw-tpl-status" id="gwTplStatus"></span>
+      <button type="button" id="gwTplNew" hidden>新建</button>
+      <button type="button" class="primary" id="gwTplLand" disabled>下载到本机模板夹</button>
+      <button type="button" id="gwTplClose">关闭</button>
+    </footer>
+  </div>
+  <script type="text/javascript">
+    if (window.GwCloudTplApp) GwCloudTplApp.boot();
+  </script>
+</body>
+</html>
