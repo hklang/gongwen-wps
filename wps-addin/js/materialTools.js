@@ -5,6 +5,75 @@
   var MAX_READ = 12000;
   var MAX_SEARCH_HITS = 5;
   var MAX_HIT_CHARS = 800;
+  /** 单块传输硬顶（非内容裁判）；超出标明 truncated */
+  var TRANSPORT_HARD_CAP = 100000;
+  var _contextBag = null;
+
+  function setContextBag(bag) {
+    _contextBag = bag && typeof bag === "object" ? bag : null;
+  }
+
+  function clipTransport(text, key) {
+    var s = String(text || "");
+    if (s.length <= TRANSPORT_HARD_CAP) {
+      return { ok: true, key: key, chars: s.length, text: s, truncated: false };
+    }
+    return {
+      ok: true,
+      key: key,
+      chars: s.length,
+      text: s.slice(0, TRANSPORT_HARD_CAP),
+      truncated: true,
+      note: "仅达传输硬顶，已截断；非宿主内容取舍"
+    };
+  }
+
+  function fetch_context(keys) {
+    var list = [];
+    if (Array.isArray(keys)) list = keys;
+    else if (keys && typeof keys === "object") {
+      if (Array.isArray(keys.keys)) list = keys.keys;
+      else if (keys.key) list = [keys.key];
+    }
+    if (!list.length) {
+      return {
+        ok: false,
+        error: "缺少 keys（pin|base_draft|task_card|history|doc_full）"
+      };
+    }
+    var bag = _contextBag || {};
+    var out = { ok: true, items: [] };
+    list.forEach(function (raw) {
+      var k = String(raw || "")
+        .trim()
+        .toLowerCase()
+        .replace(/-/g, "_");
+      if (k === "pin" || k === "pinned") {
+        out.items.push(clipTransport(bag.pin || "", "pin"));
+      } else if (k === "base_draft" || k === "draft" || k === "basedraft") {
+        out.items.push(clipTransport(bag.base_draft || bag.baseDraft || "", "base_draft"));
+      } else if (k === "task_card" || k === "taskcard") {
+        out.items.push({
+          ok: true,
+          key: "task_card",
+          text: String(bag.task_card || bag.taskCard || ""),
+          chars: String(bag.task_card || bag.taskCard || "").length
+        });
+      } else if (k === "history") {
+        var h = bag.history;
+        var ht =
+          typeof h === "string"
+            ? h
+            : JSON.stringify(h || [], null, 0);
+        out.items.push(clipTransport(ht, "history"));
+      } else if (k === "doc_full" || k === "doc" || k === "document") {
+        out.items.push(clipTransport(bag.doc_full || bag.docMd || "", "doc_full"));
+      } else {
+        out.items.push({ ok: false, key: k, error: "未知 key" });
+      }
+    });
+    return out;
+  }
 
   function resolveSafe(rel) {
     var root = GwProject.getRoot();
@@ -155,6 +224,12 @@
           result: search_materials(a.query || a.q || "")
         };
       }
+      if (n === "fetch_context") {
+        return {
+          name: n,
+          result: fetch_context(a.keys || a.key || a)
+        };
+      }
       return { name: n, result: { ok: false, error: "未知工具：" + n } };
     } catch (e) {
       return {
@@ -234,6 +309,13 @@
         })
       };
     }
+    if (obj.type === "ready" || obj.ready === true) {
+      return {
+        kind: "ready",
+        reply: String(obj.reply || obj.message || "资料已齐").trim(),
+        tool_calls: null
+      };
+    }
     return {
       kind: "final",
       reply: String(obj.reply || obj.message || obj.content || raw || "").trim(),
@@ -269,6 +351,8 @@
     list_files: list_files,
     read_file: read_file,
     search_materials: search_materials,
+    fetch_context: fetch_context,
+    setContextBag: setContextBag,
     executeTool: executeTool,
     parseAgentPayload: parseAgentPayload,
     hasUsableReads: hasUsableReads,

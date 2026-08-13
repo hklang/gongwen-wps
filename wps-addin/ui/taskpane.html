@@ -11,6 +11,8 @@
   <script type="text/javascript" src="../js/docapi.js"></script>
   <script type="text/javascript" src="../js/relay.js"></script>
   <script type="text/javascript" src="../js/account.js"></script>
+  <script type="text/javascript" src="../js/settingsStore.js"></script>
+  <script type="text/javascript" src="../js/settingsOpen.js"></script>
   <script type="text/javascript" src="../js/projectRoot.js"></script>
   <script type="text/javascript" src="../js/materialIndex.js"></script>
   <script type="text/javascript" src="../js/materialTools.js"></script>
@@ -31,18 +33,14 @@
         <button type="button" id="aiTabSuite" data-tab="suite">精修</button>
         <button type="button" id="aiTabProof" data-tab="proof">校对</button>
       </div>
-      <div class="ai-head-actions" id="aiHeadActions">
-        <select id="aiCapability" class="ai-session-sel" aria-label="智能能力" title="标准 / 增强">
-          <option value="fast">标准</option>
-          <option value="strong">增强</option>
-        </select>
-      </div>
+      <div class="ai-head-actions" id="aiHeadActions"></div>
     </div>
 
     <div class="ai-proof-bar" id="aiProofBar" hidden>
       <div class="ai-proof-row">
         <label class="ai-proof-scope"><input type="radio" name="proofScope" value="selection" /> 选区</label>
         <label class="ai-proof-scope"><input type="radio" name="proofScope" value="full" checked /> 全文</label>
+        <button type="button" class="ai-proof-set-link" id="proofOpenSet" title="校对检查项">设置</button>
       </div>
       <div class="ai-proof-actions">
         <button type="button" class="primary" id="proofRun">开始校对</button>
@@ -104,7 +102,7 @@
           <input type="checkbox" id="aiWantDraft" checked />
           <span>出结论</span>
         </label>
-        <label class="ai-chat-auth" id="aiWantVariantsWrap" title="勾选后出多组参考；卡片上选落点写入">
+        <label class="ai-chat-auth" id="aiWantVariantsWrap" title="勾选后出 2～6 组参考（份数由模型按差异决定）；卡片上选落点写入">
           <input type="checkbox" id="aiWantVariants" checked />
           <span>多份</span>
         </label>

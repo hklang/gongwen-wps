@@ -23,10 +23,12 @@ ENGINE_META = {
     "style": {"name": "风格", "kind": "llm", "tier": "deep"},
     "logic": {"name": "逻辑", "kind": "llm", "tier": "deep"},
     "dataverify": {"name": "数据核验", "kind": "llm", "tier": "deep"},
+    "duplicate": {"name": "内容重复", "kind": "llm", "tier": "deep"},
 }
 
 DEFAULT_QUICK = ["punctuation", "format", "dictionary", "typo", "grammar", "sensitive"]
-DEFAULT_DEEP = ["style", "logic", "dataverify"]
+DEFAULT_DEEP = ["style", "logic", "dataverify", "duplicate"]
+DUP_SUGGESTION = "建议删除本处或与另一处合并"
 
 SEGMENT_THRESHOLD = 3500
 SEGMENT_OVERLAP = 120
@@ -41,6 +43,26 @@ _SENS_HINT = {
 
 def _prompt(engine_id: str, sensitivity: str) -> str:
     sens = _SENS_HINT.get(sensitivity, _SENS_HINT["normal"])
+    if engine_id == "duplicate":
+        return (
+            "你是公文「跨段内容重复」审校。任务：找出同一事项/同一实质内容"
+            "出现在不同标题章节下的情况（一个内容不该在两个地方各写一遍）。\n"
+            f"当前灵敏度：{sensitivity}（{sens}）\n"
+            "规则：\n"
+            "- 只报跨章节/跨同级标题的实质重复或近义整段复述；\n"
+            "- 不报必要呼应一句、固定套话、文种格式用语、同一节内正常展开；\n"
+            "- 不臆造文中没有的事项名；original 与 peer 都必须是原文连续子串；\n"
+            "- 同一对重复只报一条（取一处为 original，另一处为 peer）；\n"
+            "- suggestion 固定为「"
+            + DUP_SUGGESTION
+            + "」（只提示，不改写正文）。\n"
+            "只输出 JSON 数组："
+            '[{"type":"duplicate","original":"...","start":0,"end":0,'
+            '"peer":"...","path":"一/(一)","peerPath":"三/(一)",'
+            '"suggestion":"'
+            + DUP_SUGGESTION
+            + '","reason":"..."}]；无问题返回 []。'
+        )
     common = (
         f"当前灵敏度：{sensitivity}（{sens}）\n"
         "要求：精确标注 start/end（0-based，exclusive end）；"
@@ -621,7 +643,7 @@ def parse_llm_errors(content: str, engine_id: str) -> list[dict]:
     for item in parsed:
         if not isinstance(item, dict):
             continue
-        out.append({
+        row = {
             "type": engine_id,
             "original": str(item.get("original") or ""),
             "start": int(item.get("start") or 0),
@@ -629,7 +651,20 @@ def parse_llm_errors(content: str, engine_id: str) -> list[dict]:
             "suggestion": str(item.get("suggestion") or ""),
             "reason": str(item.get("reason") or "")[:200],
             "category": item.get("category"),
-        })
+        }
+        if engine_id == "duplicate":
+            peer = str(item.get("peer") or item.get("peerOriginal") or "").strip()
+            if peer:
+                row["peer"] = peer[:500]
+            path = str(item.get("path") or "").strip()
+            peer_path = str(item.get("peerPath") or item.get("peer_path") or "").strip()
+            if path:
+                row["path"] = path[:80]
+            if peer_path:
+                row["peerPath"] = peer_path[:80]
+            if not row["suggestion"] or row["suggestion"] == row["original"]:
+                row["suggestion"] = DUP_SUGGESTION
+        out.append(row)
     return out
 
 
@@ -650,7 +685,8 @@ def _run_llm_engine(
     elif engine_id == "dataverify" and not facts_block:
         return []
 
-    segs = split_segments(text)
+    # 内容重复必须看全文；分段会拆掉跨「一、」「三、」的对照
+    segs = [(text, 0)] if engine_id == "duplicate" else split_segments(text)
     all_err: list[dict] = []
     for seg_text, offset in segs:
         msgs = [
@@ -776,13 +812,30 @@ def proofread(
                     failed.append({"engineId": eid, "error": str(e)})
                     by_engine.setdefault(eid, 0)
 
-    merged = correct_positions(deterministic_merge(raw, text), text)
+    # 内容重复不与邻近错敏合并，否则会丢 peer / 路径
+    raw_dups = [e for e in raw if e.get("type") == "duplicate"]
+    raw_rest = [e for e in raw if e.get("type") != "duplicate"]
+    merged = correct_positions(deterministic_merge(raw_rest, text), text)
+    merged.extend(correct_positions(raw_dups, text))
     # 终检：original 必须是原文子串（防模型串稿/臆造）
-    merged = [
-        e for e in merged
-        if e.get("original") and str(e.get("original")) in text
-        and e.get("suggestion") != e.get("original")
-    ]
+    kept: list[dict] = []
+    for e in merged:
+        orig = str(e.get("original") or "")
+        if not orig or orig not in text:
+            continue
+        if e.get("type") == "duplicate":
+            peer = str(e.get("peer") or "")
+            if peer and peer not in text:
+                e = dict(e)
+                e.pop("peer", None)
+            if not e.get("suggestion") or e.get("suggestion") == orig:
+                e = dict(e)
+                e["suggestion"] = DUP_SUGGESTION
+            kept.append(e)
+            continue
+        if e.get("suggestion") != orig:
+            kept.append(e)
+    merged = kept
     # 再滤：LLM 可能把量词/馆号误报成错别字，与本地白名单对齐
     cleaned: list[dict] = []
     for e in merged:

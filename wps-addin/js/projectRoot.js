@@ -17,6 +17,8 @@
   var OFFICE_RE = /\.docx?$/i;
   var TEXT_RE = /\.(md|txt)$/i;
   var READABLE_RE = /\.(docx?|md|txt)$/i;
+  /** 正文内存缓存：避免每次发送 Documents.Open 闪屏 */
+  var textCache = {};
 
   function storeGet(k) {
     try {
@@ -666,6 +668,7 @@
   /**
    * 从已打开或临时只读打开的 doc/docx 抽纯文本。
    * 临时打开后关闭，并尽量回到原先活动文档。
+   * 注意：Open/Close/Activate 会导致 WPS 闪一下——调用方须靠 textCache 避免重复抽。
    */
   function extractOfficeText(abs) {
     var app = global.Application;
@@ -727,7 +730,13 @@
       opened = null;
       if (prev) {
         try {
-          prev.Activate();
+          var cur = null;
+          try {
+            cur = app.ActiveDocument;
+          } catch (eCur) {}
+          if (!cur || !samePath(String(cur.FullName || ""), String(prev.FullName || ""))) {
+            prev.Activate();
+          }
         } catch (eAct) {}
       }
       return { ok: true, text: tx, via: "temp-open" };
@@ -746,7 +755,20 @@
     }
   }
 
-  function readTextRel(rel) {
+  function textCacheKey(rel) {
+    return normRel(rel).toLowerCase();
+  }
+
+  function clearTextCache(rel) {
+    if (!rel) {
+      textCache = {};
+      return;
+    }
+    delete textCache[textCacheKey(rel)];
+  }
+
+  function readTextRel(rel, opts) {
+    opts = opts || {};
     resolveRoot();
     var root = getRoot();
     var pathRel = normRel(rel);
@@ -757,15 +779,50 @@
       return { ok: false, error: "仅支持读取 doc / docx / md / txt" };
     }
     if (hasDiskApi() && !fsExists(abs)) {
+      clearTextCache(pathRel);
       return { ok: false, error: "文件不存在" };
+    }
+    var st = absStatRel(pathRel) || { size: 0, mtime: 0 };
+    var ck = textCacheKey(pathRel);
+    var hit = textCache[ck];
+    if (
+      !opts.force &&
+      hit &&
+      hit.text != null &&
+      ((Number(st.mtime) || Number(st.size))
+        ? Number(hit.mtime) === Number(st.mtime) &&
+          Number(hit.size) === Number(st.size)
+        : true)
+    ) {
+      return {
+        ok: true,
+        path: pathRel,
+        text: hit.text,
+        via: (hit.via || "cache") + "+cache"
+      };
     }
     if (TEXT_RE.test(pathRel)) {
       var tx = fsReadText(abs);
       if (tx == null) return { ok: false, error: "无法读取文本文件", path: pathRel };
-      return { ok: true, path: pathRel, text: cleanDocText(tx), via: "text" };
+      var textOk = cleanDocText(tx);
+      textCache[ck] = {
+        mtime: st.mtime || 0,
+        size: st.size || 0,
+        text: textOk,
+        via: "text",
+        at: Date.now()
+      };
+      return { ok: true, path: pathRel, text: textOk, via: "text" };
     }
     var r = extractOfficeText(abs);
     if (!r.ok) return r;
+    textCache[ck] = {
+      mtime: st.mtime || 0,
+      size: st.size || 0,
+      text: r.text,
+      via: r.via || "office",
+      at: Date.now()
+    };
     return { ok: true, path: pathRel, text: r.text, via: r.via };
   }
 
@@ -830,7 +887,7 @@
       var arr = raw ? JSON.parse(raw) : [];
       return Array.isArray(arr)
         ? arr.map(normRel).filter(function (p) {
-            return p && OFFICE_RE.test(p);
+            return p && READABLE_RE.test(p);
           })
         : [];
     } catch (e) {
@@ -915,8 +972,8 @@
   function addCite(rel) {
     var p = normRel(rel);
     if (!p) return { ok: false, error: "空路径" };
-    if (!OFFICE_RE.test(p)) {
-      return { ok: false, error: "仅可引用 doc / docx" };
+    if (!READABLE_RE.test(p)) {
+      return { ok: false, error: "仅可引用 doc / docx / md / txt" };
     }
     var list = getCitePaths();
     if (list.indexOf(p) >= 0) return { ok: true, exists: true, path: p };
@@ -1181,6 +1238,7 @@
     pickFolder: pickFolder,
     listProjectFiles: listProjectFiles,
     readTextRel: readTextRel,
+    clearTextCache: clearTextCache,
     absStatRel: absStatRel,
     fsStat: fsStat,
     fsExists: fsExists,

@@ -930,11 +930,14 @@
       heading: h0,
       items: indices.map(function (i) {
         var hh = headingInfo(paras.Item(i));
+        var bb = paraSelectBounds(paras.Item(i));
         return {
           index: i,
           lvl: hh.lvl,
           via: hh.via,
-          text: hh.text.slice(0, 120)
+          text: hh.text.replace(/\s+$/, ""),
+          start: bb.start,
+          end: bb.end
         };
       }),
       text: texts.join("\n\n"),
@@ -943,6 +946,60 @@
       from: indices[0],
       to: indices[indices.length - 1],
       count: indices.length
+    };
+  }
+
+  /** 按段落序号取当前标题行全文（精修写回前刷新） */
+  function headingTextsByIndices(indices) {
+    var paras = doc().Paragraphs;
+    var n = paras.Count;
+    return (indices || []).map(function (idx) {
+      if (!idx || idx < 1 || idx > n) throw new Error("标题锚点已失效，请重新扩选钉住");
+      var h = headingInfo(paras.Item(idx));
+      if (!h.via) throw new Error("段落已不是标题，请重新扩选钉住");
+      return h.text.replace(/\s+$/, "");
+    });
+  }
+
+  /**
+   * 同级多标题逐条写回：自后向前替换，避免段落序号漂移。
+   * indices / texts 一一对应；返回包围首末条的 start/end。
+   */
+  function replaceSiblingHeadings(indices, texts) {
+    var list = indices || [];
+    var rows = texts || [];
+    if (!list.length || list.length !== rows.length) {
+      throw new Error("同级标题条数与方案不一致，请重新出方案");
+    }
+    var pairs = list.map(function (idx, i) {
+      return { idx: idx, text: String(rows[i] == null ? "" : rows[i]) };
+    });
+    pairs.sort(function (a, b) {
+      return b.idx - a.idx;
+    });
+    var paras = doc().Paragraphs;
+    var n = paras.Count;
+    for (var k = 0; k < pairs.length; k++) {
+      var idx = pairs[k].idx;
+      if (!idx || idx < 1 || idx > n) {
+        throw new Error("标题锚点已失效，请重新扩选钉住");
+      }
+      var bounds = paraSelectBounds(paras.Item(idx));
+      /* 只换行内文字，段末标记留给原段落 */
+      replaceRange(bounds.start, bounds.end, pairs[k].text, {
+        endsWithPara: false
+      });
+    }
+    var first = paraSelectBounds(paras.Item(list[0]));
+    var last = paraSelectBounds(paras.Item(list[list.length - 1]));
+    try {
+      selectRange(first.start, last.end);
+    } catch (eSel) {}
+    return {
+      start: first.start,
+      end: last.end,
+      text: rows.join("\n\n"),
+      count: list.length
     };
   }
 
@@ -1023,6 +1080,8 @@
     selectHeadingSection: selectHeadingSection,
     selectSiblingHeadings: selectSiblingHeadings,
     selectSiblingHeadingsByIndex: selectSiblingHeadingsByIndex,
+    replaceSiblingHeadings: replaceSiblingHeadings,
+    headingTextsByIndices: headingTextsByIndices,
     selectHeadingLineByIndex: selectHeadingLineByIndex,
     selectHeadingBlock: selectHeadingBlock,
     selectHeadingBlockByIndex: selectHeadingBlockByIndex,

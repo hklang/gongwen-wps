@@ -298,9 +298,10 @@
       } else if (act === "del") {
         if (!window.confirm("删除工程内文件？\n" + pathRel)) return;
         var d = GwProject.deleteRel(pathRel);
-        if (!d.ok) setStatus(d.error || "删除失败", "err");
+    if (!d.ok) setStatus(d.error || "删除失败", "err");
         else {
           GwProject.removeCite(pathRel);
+          if (GwProject.clearTextCache) GwProject.clearTextCache(pathRel);
           if (
             GwProject.getStyleRefRel &&
             GwProject.getStyleRefRel() === pathRel
@@ -353,6 +354,7 @@
     $("btnProjBind").addEventListener("click", bindProject);
     $("btnProjRefresh").addEventListener("click", function () {
       renderProjectFiles(false);
+      if (window.GwProject && GwProject.clearTextCache) GwProject.clearTextCache();
       if (window.GwMaterialIndex) {
         setStatus("正在同步索引…", "");
         try {
@@ -387,6 +389,7 @@
         }
         setStatus("正在全量重建素材索引…", "");
         try {
+          if (window.GwProject && GwProject.clearTextCache) GwProject.clearTextCache();
           var r = GwMaterialIndex.rebuildFull(function (p) {
             if (p && p.path) {
               setStatus(

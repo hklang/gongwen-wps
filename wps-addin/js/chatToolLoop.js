@@ -1,13 +1,20 @@
 /**
  * 对话工具环：发送前增量索引 → 多轮 tool_calls → 本机执行 → 再请求中转
+ * 是否精读、读哪些：交给模型；宿主不按用户口令做意图白名单拦截。
  */
 (function (global) {
-  var MAX_ROUNDS = 6;
+  var MAX_ROUNDS = 4;
 
-  function wantsFactual(msg) {
-    return /充填|写数|据实|素材|数据|指标|完成情况|汇报/.test(
-      String(msg || "")
+  function scrubFalseMaterialClaims(reply) {
+    var t = String(reply || "");
+    if (!t) return t;
+    t = t.replace(
+      /三组均据[^。\n]{0,30}材料落稿[^。\n]{0,40}[。.]?/g,
+      "本轮未带上素材正文，组内数字仅能标【待核实】，请先引用或放入「素材/」。"
     );
+    t = t.replace(/均?据[^。\n]{0,24}材料落稿/g, "在未精读素材正文的前提下试写");
+    t = t.replace(/据[^「」\n]{0,16}材料/g, "在缺少精读材料时");
+    return t;
   }
 
   function slimWorkspace(ws, readSet) {
@@ -47,13 +54,31 @@
     opts = opts || {};
     var message = String(opts.message || "").trim();
     var contextMd = String(opts.contextMd || "");
-    var capability = opts.capability === "strong" ? "strong" : "fast";
     var allowEdit = !!opts.allowEdit;
+    /* 交流 flash、终稿 pro；纯聊天全程 flash */
+    var talkCap =
+      opts.talkCapability === "strong"
+        ? "strong"
+        : opts.talkCapability === "fast"
+          ? "fast"
+          : "fast";
+    var finalCap = allowEdit
+      ? opts.finalCapability === "fast"
+        ? "fast"
+        : opts.finalCapability === "strong"
+          ? "strong"
+          : opts.capability === "fast"
+            ? "fast"
+            : "strong"
+      : talkCap;
     var citeMats = opts.materials || [];
     var history = Array.isArray(opts.history) ? opts.history : [];
     var sessionSummary = String(opts.session_summary || "");
     var docMd = String(opts.doc_md || "");
     var seedReadSet = Array.isArray(opts.read_set) ? opts.read_set.slice() : [];
+    var contextBag = opts.contextBag && typeof opts.contextBag === "object"
+      ? opts.contextBag
+      : null;
     var onStatus = typeof opts.onStatus === "function" ? opts.onStatus : function () {};
 
     if (!message) {
@@ -63,11 +88,24 @@
       return Promise.reject(new Error("无中转模块"));
     }
 
+    if (global.GwMaterialTools && GwMaterialTools.setContextBag) {
+      GwMaterialTools.setContextBag(
+        contextBag || {
+          pin: contextMd,
+          doc_full: docMd,
+          history: history,
+          base_draft: "",
+          task_card: ""
+        }
+      );
+    }
+
     var state = {
       readSet: seedReadSet.slice(),
       toolResults: [],
       steps: [],
-      readMeta: []
+      readMeta: [],
+      lastReasoning: ""
     };
 
     function status(msg, extra) {
@@ -121,6 +159,36 @@
       });
     }
 
+    function seedMatList(mats, via) {
+      var n = 0;
+      (mats || []).forEach(function (m) {
+        if (!m || !(m.ok || m.text) || !m.text) return;
+        var p = GwProject.normRel(m.path || m.title || "");
+        if (!p) return;
+        if (state.readSet.indexOf(p) >= 0) return;
+        state.readSet.push(p);
+        state.toolResults.push({
+          id: via + "_" + state.toolResults.length,
+          name: "read_file",
+          arguments: { path: p },
+          result: {
+            ok: true,
+            path: p,
+            title: m.title || p,
+            text: String(m.text || "").slice(0, 12000),
+            via: via || "auto"
+          }
+        });
+        state.readMeta.push({
+          path: p,
+          title: m.title || GwMaterialTools.shortName(p),
+          at: new Date().toISOString()
+        });
+        n += 1;
+      });
+      return n;
+    }
+
     function executeCalls(calls) {
       var newReads = 0;
       var dupOnly = true;
@@ -163,26 +231,81 @@
       return { newReads: newReads, dupOnly: dupOnly && calls.length > 0 };
     }
 
-    function oneRound(forceFinal, round) {
+    function relayMaterials() {
+      var out = [];
+      var seen = {};
+      function push(m) {
+        if (!m || !m.text) return;
+        var p = GwProject.normRel(m.path || m.title || "");
+        if (!p || seen[p]) return;
+        seen[p] = true;
+        out.push({
+          path: p,
+          title: m.title || p,
+          text: String(m.text).slice(0, 12000)
+        });
+      }
+      (citeMats || []).forEach(push);
+      state.toolResults.forEach(function (tr) {
+        if (
+          tr &&
+          tr.name === "read_file" &&
+          tr.result &&
+          tr.result.ok &&
+          tr.result.text
+        ) {
+          push({
+            path: tr.result.path,
+            title: tr.result.title,
+            text: tr.result.text
+          });
+        }
+      });
+      return out;
+    }
+
+    function oneRound(forceFinal, round, cap, gatherOnly) {
+      var useCap = cap || talkCap;
       var ws = slimWorkspace(
         GwMaterialIndex ? GwMaterialIndex.workspaceForAi() : {},
         state.readSet
       );
+      var mats = relayMaterials();
       status(
         forceFinal
-          ? "正在作答…"
-          : "模型思考中（第 " + (round + 1) + " 轮）…",
+          ? useCap === "strong"
+            ? "①材料已齐 → ②增强模型出终稿"
+            : "正在作答…"
+          : gatherOnly
+            ? "①准备材料（第 " +
+              (round + 1) +
+              "/" +
+              MAX_ROUNDS +
+              " 轮，标准档取数）"
+            : "处理中（第 " + (round + 1) + " 轮）…",
         state
       );
-      return GwRelay.chat(message, contextMd, capability, allowEdit, null, {
-        workspace: ws,
-        tool_results: state.toolResults,
-        read_set: state.readSet.slice(),
-        force_final: !!forceFinal,
-        history: history,
-        session_summary: sessionSummary,
-        doc_md: docMd
-      }).then(function (json) {
+      return GwRelay.chat(
+        message,
+        "",
+        useCap,
+        allowEdit,
+        mats.length ? mats : null,
+        {
+          workspace: ws,
+          tool_results: state.toolResults,
+          read_set: state.readSet.slice(),
+          force_final: !!forceFinal,
+          gather_only: !!gatherOnly,
+          history: history,
+          session_summary: sessionSummary,
+          doc_md: "",
+          assistant_reasoning: state.lastReasoning || ""
+        }
+      ).then(function (json) {
+        if (json && json.reasoning_content) {
+          state.lastReasoning = String(json.reasoning_content || "");
+        }
         if (forceFinal) return { done: true, json: json };
         var parsed = GwMaterialTools.parseAgentPayload(
           (json && json.reply) || "",
@@ -191,8 +314,55 @@
         if (parsed.kind === "tools" && parsed.tool_calls && parsed.tool_calls.length) {
           return { done: false, calls: parsed.tool_calls, json: json };
         }
+        /* gather：ready/任何非 tool 答复 → 资料阶段结束，不把 flash 正文当终稿 */
+        if (gatherOnly) {
+          return { done: true, gatherReady: true, json: json, parsed: parsed };
+        }
         return { done: true, json: json, parsed: parsed };
       });
+    }
+
+    function packResult(r) {
+      var reply =
+        (r.json && r.json.reply) ||
+        (r.parsed && r.parsed.reply) ||
+        "(空回复)";
+      var edit =
+        (r.json && r.json.edit) ||
+        (r.parsed && r.parsed.edit) ||
+        null;
+      var options =
+        (r.json && r.json.options) ||
+        (r.parsed && r.parsed.options) ||
+        null;
+      if (
+        allowEdit &&
+        GwMaterialTools &&
+        GwMaterialTools.parseAgentPayload
+      ) {
+        var again = GwMaterialTools.parseAgentPayload(reply, r.json);
+        if (again && again.edit && !edit) {
+          edit = again.edit;
+          if (again.reply) reply = again.reply;
+        }
+        if (again && again.options && again.options.length) {
+          options = again.options;
+        }
+      }
+      if (!GwMaterialTools.hasUsableReads(state.toolResults)) {
+        reply = scrubFalseMaterialClaims(reply);
+      }
+      status("完成", state);
+      return {
+        ok: true,
+        reply: reply,
+        edit: edit,
+        options: options,
+        read_set: state.readSet.slice(),
+        readMeta: state.readMeta.slice(),
+        steps: state.steps.slice(),
+        toolResults: state.toolResults
+      };
     }
 
     return syncIndex()
@@ -207,109 +377,199 @@
           );
         }
         seedCited();
+        /* 要啥给啥：不预灌会话精读/目录假工具轮；由模型 fetch_context / read_file */
+        return { autoN: 0 };
+      })
+      .then(function () {
         var round = 0;
+        var needProFinal = allowEdit && finalCap === "strong";
 
-        function loop(force) {
-          return oneRound(force, round).then(function (r) {
+        function finalizeWrite() {
+          /* flash 取数结果已在 tool_results；不回灌 flash reasoning 给 pro */
+          state.lastReasoning = "";
+          var n = (state.toolResults && state.toolResults.length) || 0;
+          status(
+            n
+              ? "①材料已齐（" + n + " 条）→ ②增强出终稿（质量优先，可能需1～3分钟）"
+              : "①无需再取数 → ②增强出终稿（质量优先，可能需1～3分钟）",
+            state
+          );
+          return oneRound(true, round, finalCap, false).then(packResult);
+        }
+
+        function hasMaterialPool() {
+          if ((citeMats || []).length) return true;
+          try {
+            if (!global.GwMaterialIndex || !GwMaterialIndex.workspaceForAi)
+              return false;
+            var ws = GwMaterialIndex.workspaceForAi() || {};
+            return !!(ws.catalog && ws.catalog.length);
+          } catch (e) {
+            return false;
+          }
+        }
+
+        function gatherLoop() {
+          return oneRound(false, round, talkCap, true).then(function (r) {
             if (r.done) {
-              var reply =
-                (r.json && r.json.reply) ||
-                (r.parsed && r.parsed.reply) ||
-                "(空回复)";
-              var edit =
-                (r.json && r.json.edit) ||
-                (r.parsed && r.parsed.edit) ||
-                null;
-              var options =
-                (r.json && r.json.options) ||
-                (r.parsed && r.parsed.options) ||
-                null;
-              /* force_final 时 reply 可能仍是整段 JSON */
-              if (
-                allowEdit &&
-                GwMaterialTools &&
-                GwMaterialTools.parseAgentPayload
-              ) {
-                var again = GwMaterialTools.parseAgentPayload(reply, r.json);
-                if (again && again.edit && !edit) {
-                  edit = again.edit;
-                  if (again.reply) reply = again.reply;
-                }
-                if (again && again.options && again.options.length) {
-                  options = again.options;
-                }
-              }
-              if (
-                wantsFactual(message) &&
-                !GwMaterialTools.hasUsableReads(state.toolResults) &&
-                !(citeMats && citeMats.length)
-              ) {
-                if (!/未成功精读到素材正文/.test(reply)) {
-                  reply +=
-                    "\n\n（提示：本轮未成功精读到素材正文。请将材料放入工程「素材/」并点刷新，或右键引用后再试；无依据处勿编造数字。）";
-                }
-              }
-              status("完成", state);
-              return {
-                ok: true,
-                reply: reply,
-                edit: edit,
-                options: options,
-                read_set: state.readSet.slice(),
-                readMeta: state.readMeta.slice(),
-                steps: state.steps.slice(),
-                toolResults: state.toolResults
-              };
+              return finalizeWrite();
             }
             var ex = executeCalls(r.calls || []);
             round += 1;
-            if (ex.dupOnly || round >= MAX_ROUNDS || round >= 4) {
-              return loop(true);
+            if (ex.dupOnly || round >= MAX_ROUNDS) {
+              return finalizeWrite();
             }
-            return loop(false);
+            return gatherLoop();
           });
         }
 
-        return loop(false);
+        function chatLoop(force) {
+          return oneRound(force, round, talkCap, false).then(function (r) {
+            if (r.done) return packResult(r);
+            var ex = executeCalls(r.calls || []);
+            round += 1;
+            if (ex.dupOnly || round >= MAX_ROUNDS) {
+              return chatLoop(true);
+            }
+            return chatLoop(false);
+          });
+        }
+
+        /* 出稿：有素材池才 flash 取数；否则钉住已在首包，直接 pro 终稿 */
+        if (needProFinal) {
+          if (!hasMaterialPool()) {
+            status("工程无素材待取 → 直接增强出终稿", state);
+            return finalizeWrite();
+          }
+          return gatherLoop();
+        }
+        return chatLoop(false);
       });
   }
 
+  function extractMaterialKeys(text) {
+    var raw = String(text || "");
+    var cut = raw
+      .split("【宿主约束】")[0]
+      .split("【写前对齐】")[0]
+      .split("【本轮焦点说明】")[0]
+      .split("【风格参照")[0];
+    cut = cut.replace(/【[\s\S]*?】/g, " ").replace(/\s+/g, " ").trim();
+    var stop =
+      /^(继续|完成|这一段|请按|给出|正文|标题|重写|加入|实际|工作|别写|太空|一组|二组|三组|参考|选定|光标|整篇)$/;
+    var keys = [];
+    var seen = {};
+    var m;
+    var re = /[\u4e00-\u9fff]{2,8}|[A-Za-z][A-Za-z0-9_-]{1,}/g;
+    while ((m = re.exec(cut)) && keys.length < 16) {
+      var w = m[0];
+      if (stop.test(w) || seen[w]) continue;
+      seen[w] = true;
+      keys.push(w);
+    }
+    return keys;
+  }
+
   /**
-   * 精修：同步索引后，若无引用则按要求检索并精读最多 2 篇，作为 materials 送出方案
+   * 无引用时自动精读工程「素材/」：关键词命中优先，否则直接读前几篇。
+   * 不再用整句「继续完成这一段」去全文匹配（几乎永远 miss）。
    */
-  function prepareSuggestMaterials(requirement, citeMats) {
-    var mats = (citeMats || []).slice();
-    try {
-      GwMaterialIndex.syncIncremental();
-    } catch (e) {}
+  function prepareSuggestMaterials(requirement, citeMats, extra) {
+    var mats = (citeMats || []).slice().filter(function (m) {
+      return m && m.text;
+    });
     if (mats.length) return Promise.resolve(mats);
     try {
-      var q = String(requirement || "").replace(/\s+/g, " ").trim().slice(0, 40);
-      var hits = GwMaterialTools.search_materials(q || "工作").hits || [];
-      if (!hits.length) {
-        var list = GwMaterialTools.list_files();
-        hits = ((list && list.materials) || []).slice(0, 2).map(function (m) {
-          return { path: m.path, title: m.title };
+      if (global.GwMaterialIndex) GwMaterialIndex.syncIncremental();
+    } catch (e) {}
+
+    var pool = [];
+    try {
+      var listed = GwProject.listProjectFiles();
+      if (listed && listed.ok && listed.materials && listed.materials.length) {
+        pool = listed.materials.slice();
+      }
+    } catch (eList) {}
+    if (!pool.length) {
+      try {
+        var lf = GwMaterialTools.list_files();
+        pool = (lf && lf.materials) || [];
+      } catch (eLf) {}
+    }
+    if (!pool.length) {
+      return Promise.resolve([]);
+    }
+
+    var keys = extractMaterialKeys(
+      String(requirement || "") +
+        "\n" +
+        String((extra && extra.contextMd) || "") +
+        "\n" +
+        String((extra && extra.doc_md) || "")
+    );
+    var sumByPath = {};
+    try {
+      if (global.GwMaterialIndex && GwMaterialIndex.workspaceForAi) {
+        var wsi = GwMaterialIndex.workspaceForAi() || {};
+        (wsi.materials || []).forEach(function (m) {
+          if (m && m.path) sumByPath[m.path] = String(m.summary || "");
+        });
+        (wsi.catalog || []).forEach(function (m) {
+          if (m && m.path && !sumByPath[m.path])
+            sumByPath[m.path] = "";
         });
       }
-      hits.slice(0, 2).forEach(function (h) {
-        var rd = GwMaterialTools.read_file(h.path, 8000);
-        if (rd.ok) {
-          mats.push({
-            path: rd.path,
-            title: rd.title,
-            text: rd.text,
-            ok: true
-          });
-        }
+    } catch (eIdx) {}
+    var scored = pool.map(function (it) {
+      var path = String(it.path || "");
+      var title = String(it.title || "");
+      var sum = sumByPath[path] || String(it.summary || "");
+      var blob = (path + " " + title + " " + sum).toLowerCase();
+      var score = 0;
+      keys.forEach(function (k) {
+        if (blob.indexOf(String(k).toLowerCase()) >= 0) score += 3;
       });
-    } catch (e2) {}
+      if (/素材/.test(path)) score += 1;
+      return { path: path, title: title, score: score };
+    });
+    scored.sort(function (a, b) {
+      return b.score - a.score;
+    });
+    /* 有关键词命中则取命中的；否则仍读前 3 篇，避免「搜不到就空」 */
+    var picked = scored.filter(function (x) {
+      return x.score > 0;
+    });
+    if (!picked.length) picked = scored.slice(0, 3);
+    else picked = picked.slice(0, 3);
+
+    var errors = [];
+    picked.forEach(function (h) {
+      if (!h.path) return;
+      var rd = GwMaterialTools.read_file(h.path, 10000);
+      if (rd && rd.ok && rd.text) {
+        mats.push({
+          path: rd.path,
+          title: rd.title || h.title,
+          text: rd.text,
+          ok: true
+        });
+      } else {
+        errors.push(
+          (h.path || "") + ":" + ((rd && rd.error) || "读失败")
+        );
+      }
+    });
+    if (!mats.length && errors.length && global.GwLog) {
+      try {
+        GwLog.warn("material.auto_read.fail", { errors: errors.slice(0, 5) });
+      } catch (eLog) {}
+    }
     return Promise.resolve(mats);
   }
 
   global.GwChatLoop = {
     runChat: runChat,
     prepareSuggestMaterials: prepareSuggestMaterials,
-    wantsFactual: wantsFactual
+    extractMaterialKeys: extractMaterialKeys
   };
 })(window);

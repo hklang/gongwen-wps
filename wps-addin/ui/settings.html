@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>公文助手 · 设置</title>
+  <link rel="stylesheet" href="./settings.css" />
+  <script type="text/javascript" src="../js/util.js"></script>
+  <script type="text/javascript" src="../js/userPrefs.js"></script>
+  <script type="text/javascript" src="../js/relay.js"></script>
+  <script type="text/javascript" src="../js/settingsStore.js"></script>
+  <script type="text/javascript" src="../js/settingsApp.js"></script>
+  <script type="text/javascript">
+    if (window.GwUserPrefs) GwUserPrefs.watchWindow("settings");
+  </script>
+</head>
+<body>
+  <div id="gwSetApp" class="gw-set-app">
+    <header class="gw-set-head">
+      <strong>设置</strong>
+      <button type="button" class="gw-set-x" id="gwSetCloseX" aria-label="关闭">×</button>
+    </header>
+    <div class="gw-set-layout">
+      <nav class="gw-set-nav" id="gwSetNav" aria-label="设置分类">
+        <button type="button" class="on" data-pane="general">通用</button>
+        <button type="button" data-pane="proof">校对</button>
+        <button type="button" data-pane="dict">我的词库</button>
+        <button type="button" data-pane="facts">事实口径</button>
+        <button type="button" data-pane="advanced">高级</button>
+      </nav>
+      <main class="gw-set-body" id="gwSetBody"></main>
+    </div>
+    <footer class="gw-set-foot">
+      <span class="gw-set-foot-hint">改完点「确定」保存到本机；不进设置也能直接校对。</span>
+      <button type="button" id="gwSetCancel">取消</button>
+      <button type="button" class="primary" id="gwSetOk">确定</button>
+    </footer>
+  </div>
+  <script type="text/javascript">
+    if (window.GwSettingsApp) GwSettingsApp.boot();
+  </script>
+</body>
+</html>

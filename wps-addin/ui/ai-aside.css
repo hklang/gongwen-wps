@@ -1002,6 +1002,17 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
 #aiAside .ai-err-body { font-size: 12.5px; line-height: 1.45; color: #292524; margin: 4px 0; }
 #aiAside .ai-err-body del { color: #b91c1c; margin-right: 4px; }
 #aiAside .ai-err-body ins { color: #15803d; text-decoration: none; font-weight: 600; }
+#aiAside .ai-err-dup-a,
+#aiAside .ai-err-dup-b {
+  margin: 2px 0;
+  color: #44403c;
+}
+#aiAside .ai-err-dup-b { color: #78716c; }
+#aiAside .ai-err-hint {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: #a16207;
+}
 #aiAside .ai-err-reason { font-size: 11.5px; color: #78716c; margin: 0 0 6px; }
 #aiAside .ai-err-acts { display: flex; gap: 6px; }
 #aiAside .ai-err-acts button {
@@ -1044,6 +1055,44 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+#aiAside .ai-settings-btn {
+  border: 1px solid #d6d3d1;
+  background: #fff;
+  color: #57534e;
+  border-radius: 6px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+#aiAside .ai-settings-btn:hover {
+  border-color: #a8a29e;
+  color: #1c1917;
+}
+#aiAside .ai-proof-set-link {
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+  margin-left: auto;
+}
+#aiAside .ai-proof-set-link:hover { text-decoration: underline; }
+#aiAside .ai-linkish {
+  border: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+  margin-top: 6px;
+}
+#aiAside .ai-linkish:hover { text-decoration: underline; }
 
 #aiAside .ai-account-btn {
   flex: 0 0 auto;

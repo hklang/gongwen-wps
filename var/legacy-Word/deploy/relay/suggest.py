@@ -183,6 +183,38 @@ _MATERIAL_TOOL_DEFS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_context",
+            "description": (
+                "按清单点名取宿主上下文正文（可多项）："
+                "pin 钉住范围；base_draft 用户已采用底稿；"
+                "task_card 任务卡；history 近轮对话；doc_full 当前完整正文。"
+                "首包仅有清单无正文；需要哪项再取。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": [
+                                "pin",
+                                "base_draft",
+                                "task_card",
+                                "history",
+                                "doc_full",
+                            ],
+                        },
+                        "description": "要取的上下文键，可多项",
+                    }
+                },
+                "required": ["keys"],
+            },
+        },
+    },
 ]
 
 
@@ -215,28 +247,49 @@ def _normalize_tool_calls(raw_calls) -> list:
     return out
 
 
+def _want_thinking(model: str | None = None, capability: str | None = None) -> bool:
+    """增强档 / Pro：开思考；标准/校对：关（省税）。API 默认本是开，我们曾误关导致 Pro 变笨。"""
+    cap = (capability or "").strip().lower()
+    if cap in ("fast", "proof"):
+        return False
+    if cap == "strong":
+        return True
+    m = (model or "").strip().lower()
+    return "pro" in m
+
+
 def _deepseek_complete(
     messages: list,
     temperature: float = 0.7,
     model: str | None = None,
     tools=None,
+    capability: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
-    """返回 {content, tool_calls}；tool_calls 为插件协议列表或 None。"""
+    """返回 {content, tool_calls, reasoning_content?}；tool_calls 为插件协议列表或 None。"""
     key, base, default_model, timeout = _deepseek_cfg(model)
-    url = base + "/chat/completions"
+    use_model = (model or default_model).strip() or default_model
+    think_on = _want_thinking(use_model, capability)
+    # 思考会吃 completion 预算；过小会出现「有推理无正文」
+    if max_tokens is not None and int(max_tokens) > 0:
+        max_tok = int(max_tokens)
+    else:
+        max_tok = 24576 if think_on else 8192
     payload = {
-        "model": (model or default_model).strip() or default_model,
+        "model": use_model,
         "messages": messages,
         "temperature": float(temperature),
-        "max_tokens": 4096,
-        "thinking": {"type": "disabled"},
+        "max_tokens": max_tok,
+        "thinking": {"type": "enabled" if think_on else "disabled"},
     }
+    if think_on:
+        payload["reasoning_effort"] = "high"
     if tools:
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        url,
+        url=base + "/chat/completions",
         data=data,
         headers={
             "Authorization": "Bearer " + key,
@@ -245,11 +298,17 @@ def _deepseek_complete(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        # 取数轮无需长等；终稿思考最多给足
+        wait = timeout
+        if think_on:
+            wait = max(timeout, 180)
+        elif max_tokens is not None and int(max_tokens) <= 4096:
+            wait = min(max(timeout, 45), 90)
+        with urllib.request.urlopen(req, timeout=wait) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")
-        log.warning("DeepSeek HTTP %s %s: %s", e.code, url, detail[:500])
+        log.warning("DeepSeek HTTP %s: %s", e.code, detail[:500])
         hint = ""
         if e.code == 401:
             hint = "（鉴权失败：核对 DEEPSEEK_API_KEY；地址应为 https://api.deepseek.com，勿用 /anthropic）"
@@ -267,14 +326,33 @@ def _deepseek_complete(
             (p.get("text") or "") for p in content if isinstance(p, dict)
         )
     content = (content or "").strip()
+    reasoning = msg.get("reasoning_content")
+    if isinstance(reasoning, list):
+        reasoning = "".join(
+            (p.get("text") or "") for p in reasoning if isinstance(p, dict)
+        )
+    reasoning = (reasoning or "").strip() or None
     tool_calls = _normalize_tool_calls(msg.get("tool_calls"))
     if not content and not tool_calls:
         raise RuntimeError("DeepSeek 返回空内容")
-    return {"content": content, "tool_calls": tool_calls or None}
+    return {
+        "content": content,
+        "tool_calls": tool_calls or None,
+        "reasoning_content": reasoning,
+        "thinking": think_on,
+        "model": use_model,
+    }
 
 
-def _deepseek_chat(messages: list, temperature: float = 0.7, model: str | None = None) -> str:
-    r = _deepseek_complete(messages, temperature=temperature, model=model, tools=None)
+def _deepseek_chat(
+    messages: list,
+    temperature: float = 0.7,
+    model: str | None = None,
+    capability: str | None = None,
+) -> str:
+    r = _deepseek_complete(
+        messages, temperature=temperature, model=model, tools=None, capability=capability
+    )
     if not r.get("content"):
         raise RuntimeError("DeepSeek 返回空内容")
     return r["content"]
@@ -286,10 +364,13 @@ def _chat(
     provider: str | None = None,
     model: str | None = None,
     cwd: str | None = None,
+    capability: str | None = None,
 ) -> str:
     prov = _provider(provider)
     if prov == "deepseek":
-        return _deepseek_chat(messages, temperature=temperature, model=model)
+        return _deepseek_chat(
+            messages, temperature=temperature, model=model, capability=capability
+        )
     return _minimax_chat(messages, temperature=temperature, model=model)
 
 
@@ -299,18 +380,66 @@ def _chat_ex(
     provider: str | None = None,
     model: str | None = None,
     tools=None,
+    capability: str | None = None,
+    max_tokens: int | None = None,
 ) -> dict:
     prov = _provider(provider)
     if prov == "deepseek":
         return _deepseek_complete(
-            messages, temperature=temperature, model=model, tools=tools
+            messages,
+            temperature=temperature,
+            model=model,
+            tools=tools,
+            capability=capability,
+            max_tokens=max_tokens,
         )
     text = _minimax_chat(messages, temperature=temperature, model=model)
-    return {"content": text, "tool_calls": None}
+    return {"content": text, "tool_calls": None, "reasoning_content": None}
 
 
-def _messages_from_tool_results(tool_results) -> list:
-    """把宿主 tool_results 还原为 assistant.tool_calls + role=tool。"""
+def _split_tool_results_for_thinking(tool_results):
+    """宿主预置的 cite/session 精读不当作原生 tool 轮（缺真 reasoning 易 400）；
+    仅模型发起的 tool_calls 回灌走 role=tool。"""
+    if not isinstance(tool_results, list) or not tool_results:
+        return [], []
+    native = []
+    seeded_mats = []
+    for tr in tool_results:
+        if not isinstance(tr, dict):
+            continue
+        res = tr.get("result") if isinstance(tr.get("result"), dict) else {}
+        via = str(res.get("via") or "")
+        tid = str(tr.get("id") or "")
+        seeded = (
+            via in ("cite", "session_read_set", "auto")
+            or tid.startswith("cite_")
+            or tid.startswith("session_")
+            or tid.startswith("host_")
+        )
+        if seeded and tr.get("name") == "read_file" and res.get("ok"):
+            text = str(res.get("text") or res.get("content") or "").strip()
+            if text:
+                seeded_mats.append(
+                    {
+                        "path": res.get("path") or "",
+                        "title": res.get("title") or "",
+                        "text": text,
+                    }
+                )
+            continue
+        if seeded and tr.get("name") == "list_files":
+            continue
+        native.append(tr)
+    return native, seeded_mats
+
+
+def _messages_from_tool_results(
+    tool_results,
+    assistant_reasoning: str = "",
+    thinking: bool = False,
+) -> list:
+    """把宿主 tool_results 还原为 assistant.tool_calls + role=tool。
+    思考模式下须回传上一轮 reasoning_content，否则 DeepSeek 会 400。"""
     if not isinstance(tool_results, list) or not tool_results:
         return []
     calls = []
@@ -340,7 +469,13 @@ def _messages_from_tool_results(tool_results) -> list:
         tool_msgs.append({"role": "tool", "tool_call_id": tid, "content": text})
     if not calls:
         return []
-    return [{"role": "assistant", "content": None, "tool_calls": calls}] + tool_msgs
+    asst = {"role": "assistant", "content": None, "tool_calls": calls}
+    if thinking:
+        reason = (assistant_reasoning or "").strip()
+        if not reason:
+            reason = "（续）根据已执行的工具结果继续。"
+        asst["reasoning_content"] = reason
+    return [asst] + tool_msgs
 
 
 def list_models(provider: str | None = None) -> dict:
@@ -803,8 +938,10 @@ def _materials_block(materials) -> str:
     if not parts:
         return ""
     return (
-        "【已引用素材——有可核对事实/数据/项目则写入；"
-        "无对应处仍须按用户意见做可感知改写；不得编造素材没有的数字/项目名】\n"
+        "【已引用素材正文——写稿必须优先采用其中的项目名、时间、数字与事实；"
+        "素材已有内容禁止用 XX / 某某 / 【待核实】空壳顶替；"
+        "仅当素材确无对应依据时才可标【待核实】或不写数字；"
+        "无对应处仍须按用户意见做可感知改写，不得编造素材没有的数字/项目名】\n"
         + "\n\n".join(parts)
         + "\n"
     )
@@ -840,7 +977,9 @@ def _build_messages_single(
         "4) 不要输出整篇公文，只输出该片段；"
         "5) 各套方案彼此应有差异；格式骨架与原文同构（标记种类与大致嵌套不变）；"
         "6) score/note/recommend 必须严肃区分优劣，不要全部打同分或随便推荐；"
-        "7) 若提供了【已引用素材】：优先写入与选区相关的可核对事实；无对应事实时按用户意见做表述优化，不得编造数字/项目名；"
+        "7) 【据实】若提供了【已引用素材】：方案中的数字、专名、时间必须能在素材中核对；"
+        "禁止编造素材没有的项目/数字；无对应依据处标【待核实】或只做表述优化；"
+        "若未提供素材：只许改写钉住原文的语气与句式，严禁新编事实、数字、专名；"
         "8) 【零改动禁止】严禁任一方案在去掉空白后与「待替换原文」完全相同；"
         "用户哪怕只写「润色/优化/更简洁」，也必须落实为可感知改写（换词、调句、理顺逻辑至少一处）；"
         "不得以「保持原意」「无素材」为由原样返回选区。"
@@ -898,7 +1037,8 @@ def _build_messages_headings(
         f"4) {_FORMAT_RULES}"
         "5) 不要输出正文段落，只输出这些标题行；"
         "6) 各套应有可感知差异；评分与推荐要能分出高下；"
-        "7) 若提供了引用素材，标题用语应能与素材主题对齐，禁止空泛堆砌；"
+        "7) 【据实】若提供了引用素材：标题用语须能与素材主题对齐，禁止空泛堆砌或编造素材没有的专名；"
+        "若未提供素材：只改表述与对仗，严禁新编事实；"
         "8) 【零改动禁止】严禁整套 items 去掉空白后与原文完全相同。"
     )
     listed = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(items))
@@ -1134,7 +1274,7 @@ def _normalize_chat_options(raw) -> list | None:
                 "note": str(it.get("note") or it.get("summary") or "").strip(),
             }
         )
-        if len(out) >= 5:
+        if len(out) >= 6:
             break
     return out or None
 
@@ -1164,17 +1304,17 @@ def _parse_chat_edit_response(text: str) -> dict:
 
 
 _TOOL_RULES_NATIVE = (
-    "【读文件工具】若【工作区】目录/会话摘要不足以回答（如要读通知、按材料搭框架），"
-    "必须调用 list_files / search_materials / read_file；"
-    "禁止编造未读到的通知内容。材料足够时直接最终答复，不要空转工具。"
+    "【上下文与读文件】首包只有【可用上下文清单】，无钉住/底稿/全文正文。"
+    "需要 pin / base_draft / task_card / history / doc_full 时先 fetch_context（keys 可多项）；"
+    "缺事实/数字/素材细节时，先 list_files 或 search_materials 选型，再 read_file；可多轮。"
+    "取舍由你判断：清单已够可直接最终答复；禁止编造未取到的内容；不要空转重复同一路径。"
 )
 _TOOL_RULES_TEXT = (
-    "【读文件工具】若【工作区】目录/摘录/会话摘要不足以回答（如要读通知、按材料搭框架），"
-    "先只输出一个 JSON（不要其它文字）："
-    '{"type":"tool_calls","calls":[{"name":"list_files|read_file|search_materials","arguments":{...}}]}'
-    "；list_files 无参；read_file 需 path（相对路径如 素材/通知.md）；"
-    "search_materials 需 query。可一次要多个。禁止编造未读到的通知内容。"
-    "已有工具结果或材料足够时，不要再调用工具，直接给最终答复。"
+    "【上下文与读文件】首包仅清单；需要上下文用 fetch_context，需要素材再选型精读。"
+    "需要工具时先只输出一个 JSON（不要其它文字）："
+    '{"type":"tool_calls","calls":[{"name":"fetch_context|list_files|read_file|search_materials","arguments":{...}}]}'
+    "；fetch_context 需 keys 数组；list_files 无参；read_file 需 path；search_materials 需 query。"
+    "禁止编造未取到的内容；清单已够可直接最终答复。"
 )
 
 
@@ -1194,9 +1334,14 @@ def chat(
     read_set=None,
     project_memory: str = "",
     force_final: bool = False,
+    materials=None,
+    capability: str | None = None,
+    assistant_reasoning: str = "",
+    gather_only: bool = False,
 ) -> dict:
     """对话：返回 {ok, reply, edit?}。edit 仅 allow_edit 时可能有，由前端确认后写盘。
-    也可返回 tool_calls（宿主本机执行后再请求）。"""
+    也可返回 tool_calls（宿主本机执行后再请求）。
+    gather_only：仅取数，禁止写终稿；宿主打包后再交增强档出结论。"""
     if _relay_cfg():
         r = _relay_request("POST", "/api/chat", {
             "message": message,
@@ -1213,6 +1358,10 @@ def chat(
             "read_set": read_set or [],
             "project_memory": project_memory or "",
             "force_final": bool(force_final),
+            "materials": materials or [],
+            "capability": capability or "",
+            "assistant_reasoning": assistant_reasoning or "",
+            "gather_only": bool(gather_only),
         })
         # 中转常回「结论」散文：本机再兜底一次改名/搭架
         if allow_edit and isinstance(r, dict) and not r.get("error"):
@@ -1221,6 +1370,8 @@ def chat(
             if (not force_final) and (
                 '"type":"tool_calls"' in reply0 or r.get("type") == "tool_calls"
             ):
+                return r
+            if gather_only:
                 return r
             edit = (r.get("edit") if isinstance(r.get("edit"), dict) else None)
             has_opts = isinstance(r.get("options"), list) and len(r.get("options") or []) >= 1
@@ -1249,22 +1400,49 @@ def chat(
     role = "校对顾问" if tab == "proof" else "公文写作顾问"
     allow_edit = bool(allow_edit)
     force_final = bool(force_final)
+    gather_only = bool(gather_only) and (not force_final)
+    # 合并宿主预置精读到 materials，避免伪装 tool 轮
+    native_trs, seeded_mats = _split_tool_results_for_thinking(tool_results)
+    if seeded_mats:
+        base_mats = list(materials) if isinstance(materials, list) else []
+        materials = base_mats + seeded_mats
+    tool_results = native_trs
+    mats_block = _materials_block(materials)
     use_native_tools = (_provider(provider) == "deepseek") and (not force_final)
+    think_on = _want_thinking(model, capability)
     tool_rules = (
         "【禁止调用工具】材料与框架已在历史/工程记忆中，直接最终答复。"
         if force_final
         else (_TOOL_RULES_NATIVE if use_native_tools else _TOOL_RULES_TEXT)
     )
-    if allow_edit and _wants_options_payload(msg):
+    evidence_rules = (
+        "【证据优先】用户消息含【已引用素材正文】时：必须写入素材中的具体项目名与数字；"
+        "禁止 XX/某某/空壳【待核实】顶替已有事实；仅素材确无依据处才可【待核实】。"
+        if mats_block
+        else ""
+    )
+    if gather_only:
+        system = (
+            f"你是机关{role}的取数助手（本轮不写终稿）。"
+            + tool_rules
+            + "本轮只做一件事：按用户要求与【可用上下文清单】决定还要不要取材料/上下文。"
+            "若还需资料：只输出 tool_calls（fetch_context / list_files / search_materials / read_file），可多轮。"
+            "若已够生成结论：只输出一个 JSON（禁止写 options/edit/正文）："
+            '{"type":"ready","reply":"一句：资料已齐，可出稿"}'
+            "严禁输出可落稿 Markdown、options、edit；终稿由后续增强模型根据已取资料生成。"
+        )
+    elif allow_edit and _wants_options_payload(msg):
         system = (
             f"你是机关{role}。用户已勾选「给多份」，须由模型给出多组可落稿参考。"
             + tool_rules
+            + evidence_rules
             + "最终答复必须是且仅是一个 JSON 对象（禁止 markdown 代码围栏）："
             '{"reply":"一两句说明","edit":null,'
             '"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"},'
             '{"id":"B","note":"…","md":"…"},{"id":"C","note":"…","md":"…"}]}'
             "硬性规则："
-            "1) edit 必须为 null；options 至少 2 组，默认 3 组，最多 5 组；"
+            "1) edit 必须为 null；options 至少 2 组、最多 6 组；份数由你按差异空间决定"
+            "（分歧大可多给，改动小给 2～3 即可，不必凑满；用户写明组数则从其）；"
             "2) 严格遵守用户消息里【宿主约束】的井号层级："
             "点选一级时：先 # 材料大标题一行，再 ## 一、二、三…；"
             "##=一级（黑体）、###=二级（楷体加黑）、####=三级；"
@@ -1274,31 +1452,38 @@ def chat(
             "3) 严禁【待补】空壳占位模板；无依据处标【待核实】或不写数字；"
             "4) 紧贴用户给出的「第一点/第二点…」结构与钉住范围；举例项（如「包含…」）不得压过主干意图；"
             "4b) 本轮用户改架构/条目形态优先于历史旧表述与底稿；禁止只在 reply 空口应承「已给出」却不交 options；"
-            "4c) 必须遵守用户消息中的【本轮焦点说明】与分层标签（L1任务/L3焦点）："
+            "4c) 必须遵守用户消息中的【本轮焦点说明】与分层标签（L1/L3-pin/L3-draft）："
+            "分层仅供参考，本轮采用哪些、忽略哪些由你判断；无关历史结论勿迁入；"
             "intent=lead 时须统领任务卡全文框架，禁止只围着标题底稿一节写冒段；"
-            "intent=outline 时焦点在当前标题/底稿，勿强行重开未点选的其它大块；"
+            "intent=outline 时推荐焦点在当前标题/底稿，勿强行重开未点选的其它大块；"
+            "intent=body 时推荐钉住优先于结论底稿，仍由你取舍；"
             "4d) 若有【写前对齐】：按意图/证据/风格/风险内部对齐后再写；"
             "无精读材料禁止编造数字；勿输出长思考过程；禁止【待补】空壳；"
+            "4e) 是否精读由你判断：缺事实则先 tool；钉住/历史已够改写则可直接出 options；"
             "5) 禁止声称已写入；reply 一两句即可。"
         )
     elif allow_edit and _host_forbids_local_scaffold(msg):
         system = (
             f"你是机关{role}。用户已授权出可落稿结论，须由模型生成。"
             + tool_rules
+            + evidence_rules
             + "最终答复必须是且仅是一个 JSON 对象（禁止 markdown 代码围栏）："
             '{"reply":"简短说明","edit":{"summary":"一句话","md":"可落稿Markdown"}}'
             "硬性规则："
             "1) edit.md 必须是可落稿 Markdown，禁止只在 reply 描述；"
             "2) 严禁【待补】空壳占位；无依据处标【待核实】或不写数字；"
             "3) 紧贴用户结构与钉住范围；对仗标题前半后半都要有区分度；"
-            "3b) 遵守【本轮焦点说明】：lead=统领全文；outline=打磨当前标题；勿选错层；"
+            "3b) 遵守【本轮焦点说明】：lead=统领全文；outline=打磨当前标题；body=钉住优先参考；"
+            "分层取舍由你判断，无关历史结论勿迁入；"
             "3c) 若有【写前对齐】：按意图/证据/风格对齐；无材料不编数；勿输出长思考；"
+            "3d) 是否精读由你判断：缺事实则先 tool；已有可改写正文可直接出 edit；"
             "4) 禁止声称已写入；reply 一两句即可。"
         )
     elif allow_edit:
         system = (
             f"你是机关{role}。用户已授权改稿。"
             + tool_rules
+            + evidence_rules
             + "最终答复必须是且仅是一个 JSON 对象"
             "（禁止输出「结论」「要点」散文，禁止 markdown 代码围栏）："
             '{"reply":"简短说明","edit":null}'
@@ -1395,9 +1580,39 @@ def chat(
                 ws_lines.append(str(it.get("snippet") or "")[:800])
         parts.append("【工作区】\n" + "\n".join(ws_lines))
     # 原生 tools：tool_results 走 role=tool；文本协议：仍写入 user 块（回退）
-    tool_msgs = _messages_from_tool_results(tool_results) if use_native_tools else []
+    tool_msgs = (
+        _messages_from_tool_results(tool_results, assistant_reasoning, think_on)
+        if use_native_tools
+        else []
+    )
     if (not use_native_tools) and isinstance(tool_results, list) and tool_results:
         parts.append("【工具结果】\n" + json.dumps(tool_results, ensure_ascii=False)[:24000])
+    # 双保险：即使用原生 tool 消息，也把精读正文摊进 user，避免模型「看不见」
+    if mats_block:
+        parts.append(mats_block)
+    elif use_native_tools and isinstance(tool_results, list) and tool_results:
+        flat: list[str] = []
+        for tr in tool_results:
+            if not isinstance(tr, dict) or tr.get("name") != "read_file":
+                continue
+            res = tr.get("result") if isinstance(tr.get("result"), dict) else {}
+            if not res.get("ok"):
+                continue
+            text = str(res.get("text") or res.get("content") or "").strip()
+            if not text:
+                continue
+            path = str(res.get("path") or "").strip() or "素材"
+            if len(text) > 12000:
+                text = text[:12000] + "\n…（已截断）"
+            flat.append(f"### 引用素材：{path}\n{text}")
+            if len(flat) >= 4:
+                break
+        if flat:
+            parts.append(
+                "【已引用素材正文——写稿必须优先采用其中事实与数据；"
+                "禁止用 XX/某某/【待核实】顶替素材已有内容】\n"
+                + "\n\n".join(flat)
+            )
     if doc:
         parts.append("【当前文件全文 md】\n" + doc[:12000])
     if ctx:
@@ -1417,13 +1632,16 @@ def chat(
     tools = _MATERIAL_TOOL_DEFS if use_native_tools else None
     out = _chat_ex(
         messages,
-        temperature=0.3,
+        temperature=0.2 if gather_only else (0.5 if think_on else 0.3),
         provider=provider,
         model=model,
         tools=tools,
+        capability=capability,
+        max_tokens=2048 if gather_only else None,
     )
     native_calls = out.get("tool_calls")
     raw = str(out.get("content") or "")
+    reasoning = out.get("reasoning_content") or None
     if native_calls:
         return {
             "ok": True,
@@ -1431,6 +1649,8 @@ def chat(
             "tool_calls": native_calls,
             "reply": raw,
             "edit": None,
+            "reasoning_content": reasoning,
+            "thinking": bool(out.get("thinking")),
             "provider": _provider(provider),
         }
     # 文本协议回退：reply 内 JSON
@@ -1439,9 +1659,10 @@ def chat(
             "ok": True,
             "reply": raw,
             "edit": None,
+            "reasoning_content": reasoning,
             "provider": _provider(provider),
         }
-    if allow_edit:
+    if allow_edit and (not gather_only):
         parsed = _parse_chat_edit_response(raw)
         options = parsed.get("options")
         edit = parsed.get("edit")
@@ -1467,6 +1688,7 @@ def chat(
                 provider=provider,
                 model=model,
                 tools=None,
+                capability=capability,
             )
             raw2 = str(out2.get("content") or "")
             if raw2 and not out2.get("tool_calls"):
@@ -1476,6 +1698,8 @@ def chat(
                     options = parsed2.get("options")
                     edit = None
                     raw = raw2
+                    if out2.get("reasoning_content"):
+                        reasoning = out2.get("reasoning_content")
         if (
             not options
             and not (edit and edit.get("md"))
@@ -1494,6 +1718,8 @@ def chat(
             "type": "final",
             "reply": reply,
             "edit": edit,
+            "reasoning_content": reasoning,
+            "thinking": think_on,
             "provider": _provider(provider),
         }
         if options:
@@ -1505,6 +1731,8 @@ def chat(
         "type": "final",
         "reply": raw,
         "edit": None,
+        "reasoning_content": reasoning,
+        "thinking": think_on,
         "provider": _provider(provider),
     }
 
@@ -1522,6 +1750,7 @@ def generate_options(
     provider: str | None = None,
     model: str | None = None,
     cwd: str | None = None,
+    capability: str | None = None,
 ) -> dict:
     """返回 {ok, options:[{id,md,items?}]}。items 用于同级多标题写回。"""
     if _relay_cfg():
@@ -1537,12 +1766,19 @@ def generate_options(
             "materials": materials,
             "provider": provider,
             "model": model,
+            "capability": capability or "",
         })
     n = max(1, min(6, int(count or 3)))
     tab = "proof" if tab == "proof" else "write"
     round_n = max(0, int(round_n or 0))
     item_list = [str(x).strip() for x in (items or []) if str(x).strip()]
-    chat_kw = {"provider": provider, "model": model, "cwd": cwd}
+    chat_kw = {
+        "provider": provider,
+        "model": model,
+        "cwd": cwd,
+        "capability": capability,
+        "temperature": 0.5 if _want_thinking(model, capability) else 0.3,
+    }
 
     def _norm_md(s: str) -> str:
         return re.sub(r"\s+", "", str(s or ""))

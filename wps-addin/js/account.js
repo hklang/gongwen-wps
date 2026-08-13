@@ -116,7 +116,8 @@
       btn.className = "ai-account-btn";
       btn.title = "账号";
       btn.textContent = "登录";
-      actions.insertBefore(btn, actions.firstChild);
+      /* 设置钮在左（⚙ | 账号）；若尚无设置钮则先占位，settings 会 insertBefore */
+      actions.appendChild(btn);
       btn.onclick = function () {
         openModal();
       };

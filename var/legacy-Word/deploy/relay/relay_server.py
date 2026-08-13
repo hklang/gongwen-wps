@@ -27,6 +27,7 @@ _CHAT_ALLOW_KEYS = frozenset({
     "tool_results", "session_summary", "read_set",
     "project_memory", "force_final", "capability",
     "category_code", "category", "template_path",
+    "materials", "assistant_reasoning", "gather_only",
 })
 
 logging.basicConfig(
@@ -692,6 +693,7 @@ class Handler(BaseHTTPRequestHandler):
                         materials=mats,
                         provider=provider,
                         model=model,
+                        capability=cap,
                     )
                     if isinstance(r, dict):
                         r.pop("model", None)
@@ -747,6 +749,10 @@ class Handler(BaseHTTPRequestHandler):
                         read_set=safe.get("read_set"),
                         project_memory=mem,
                         force_final=bool(safe.get("force_final")),
+                        materials=safe.get("materials"),
+                        capability=cap,
+                        assistant_reasoning=safe.get("assistant_reasoning") or "",
+                        gather_only=bool(safe.get("gather_only")),
                     )
                     if isinstance(r, dict):
                         r.pop("model", None)

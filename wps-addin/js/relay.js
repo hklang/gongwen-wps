@@ -256,16 +256,27 @@
     if (extra && typeof extra === "object") {
       if (extra.workspace) body.workspace = extra.workspace;
       if (extra.read_set) body.read_set = extra.read_set;
+      if (Array.isArray(extra.items) && extra.items.length)
+        body.items = extra.items;
+      if (extra.count != null) body.count = extra.count;
     }
     return request("POST", "/api/suggest", body);
   }
 
-  function proofread(text) {
-    return request("POST", "/api/proofread", {
+  function proofread(text, engines, extra) {
+    var body = {
       text: text,
       md: text,
       capability: "proof"
-    });
+    };
+    if (engines && engines.length) body.engines = engines;
+    if (extra && typeof extra === "object") {
+      if (extra.sensitivity) body.sensitivity = extra.sensitivity;
+      if (extra.whitelist) body.whitelist = extra.whitelist;
+      if (extra.mustfix) body.mustfix = extra.mustfix;
+      if (extra.facts) body.facts = extra.facts;
+    }
+    return request("POST", "/api/proofread", body);
   }
 
   function chat(message, contextMd, capability, allowEdit, materials, extra) {
@@ -285,7 +296,9 @@
         "session_summary",
         "project_memory",
         "history",
-        "doc_md"
+        "doc_md",
+        "assistant_reasoning",
+        "gather_only"
       ].forEach(function (k) {
         if (extra[k] != null) body[k] = extra[k];
       });

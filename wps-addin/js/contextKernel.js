@@ -232,23 +232,29 @@
   }
 
   function packIntent(intent, confidence, soft) {
+    var choose =
+      "分层仅供参考；本轮采用哪些、忽略哪些由你根据用户意图判断，无关历史结论勿迁入。";
     var focusLine = "";
     if (intent === "lead") {
       focusLine =
         "【本轮焦点说明】intent=lead：须统领【任务意图】全文框架写开头/冒段；" +
-        "当前标题底稿仅作目录对照，禁止只围着底稿那一节展开。";
+        "当前标题底稿仅作目录对照，禁止只围着底稿那一节展开。" +
+        choose;
     } else if (intent === "outline") {
       focusLine =
-        "【本轮焦点说明】intent=outline：焦点=当前标题/底稿/钉住；" +
-        "任务卡在场防跑出全文范围，但不要强行重开未点选的其它大块。";
+        "【本轮焦点说明】intent=outline：推荐焦点=当前标题/底稿/钉住；" +
+        "任务卡在场防跑出全文范围，但不要强行重开未点选的其它大块。" +
+        choose;
     } else if (intent === "revise_outline") {
       focusLine =
-        "【本轮焦点说明】intent=revise_outline：本轮用户改法优先；旧底稿只对照，勿锁死旧架构。";
+        "【本轮焦点说明】intent=revise_outline：本轮用户改法优先；旧底稿只对照，勿锁死旧架构。" +
+        choose;
     } else if (intent === "body") {
       focusLine =
-        "【本轮焦点说明】intent=body：写正文/段落；服从钉住与点选层级；少新增标题。";
+        "【本轮焦点说明】intent=body：写正文/段落；推荐钉住优先于结论底稿；少新增标题。" +
+        choose;
     } else if (intent === "chat") {
-      focusLine = "【本轮焦点说明】intent=chat：纯商量，不落稿。";
+      focusLine = "【本轮焦点说明】intent=chat：纯商量，不落稿。" + choose;
     }
     return {
       intent: intent,
@@ -273,7 +279,7 @@
       .trim();
   }
 
-  /** 软修剪：失败轮丢弃；助手长 md 截短 */
+  /** 软修剪：失败轮丢弃；助手多份稿只留短摘要（省 token，不替模型判焦点） */
   function pruneHistory(chat, limit) {
     limit = limit || 10;
     var raw = (chat || []).slice();
@@ -287,12 +293,12 @@
         if (/失败：|模型未给出|空壳|中转不可用/.test(text)) continue;
         if (m.variants && m.variants.length) {
           text =
-            text.split("\n")[0].slice(0, 200) +
+            text.split("\n")[0].slice(0, 180) +
             "\n（已出 " +
             m.variants.length +
-            " 组参考，正文略，见当前底稿）";
+            " 组参考，正文略）";
         } else {
-          text = text.slice(0, 1000);
+          text = text.slice(0, 1200);
         }
       } else {
         text = text.slice(0, 2500);
@@ -307,7 +313,7 @@
     return out;
   }
 
-  function buildBaseLayer(intent, baseMd) {
+  function buildBaseLayer(intent, baseMd, hasPin) {
     var md = String(baseMd || "");
     if (!md.replace(/\s/g, "")) return "";
     var kind = inferDraftKind(md);
@@ -315,22 +321,28 @@
       var toc = tocFromMd(md, 20);
       if (!toc.length) return "";
       return (
-        "\n【焦点·L3·标题目录摘要】（冒段勿只写其中一节）\n" +
+        "\n【焦点·L3-draft·标题目录摘要】（冒段勿只写其中一节）\n" +
         toc.join("\n") +
         "\n"
       );
     }
     if (intent === "revise_outline") {
       return (
-        "\n【焦点·L3·旧底稿对照】勿锁死下列旧架构，按本轮改法出新稿：\n" +
+        "\n【焦点·L3-draft·旧底稿对照】勿锁死下列旧架构，按本轮改法出新稿：\n" +
         md.slice(0, 6000) +
         "\n"
       );
     }
     if (intent === "outline" || intent === "body") {
+      var pri =
+        intent === "body" && hasPin
+          ? "（次优先：有钉住时由你判断是否沿用；无关勿迁入）"
+          : "（由你判断是否采用）";
       return (
-        "\n【焦点·L3·当前结论底稿】kind=" +
+        "\n【焦点·L3-draft·结论底稿】kind=" +
         kind +
+        " " +
+        pri +
         "\n" +
         md.slice(0, 10000) +
         "\n"
@@ -343,35 +355,109 @@
     return (
       "\n【同轮自对齐】先在 reply 首句用十多字确认本轮焦点（与 intent=" +
       intent +
-      " 一致），再输出 JSON；选用已分层标注的上下文，禁止把未抬高的层当成全文主题。\n"
+      " 一致）；需要上下文请先 fetch_context / 读素材，再输出 JSON。\n"
     );
   }
 
+  /**
+   * 要啥给啥：首包 = 清单 +（用户已钉住则必附 pin 原文）。
+   * 钉住是显式工作面，不是宿主猜语义；底稿/全文/历史仍点名取。
+   * opts: pinText, pinChars, draftChars, taskCard, historyN, docChars, focusLine, intent, soft, confidence, displayMsg, allowEdit
+   */
+  function buildContextInventory(opts) {
+    opts = opts || {};
+    var pinRaw = String(opts.pinText || "").trim();
+    var pinN =
+      Number(opts.pinChars) ||
+      (pinRaw ? pinRaw.replace(/\s/g, "").length : 0);
+    var draftN = Number(opts.draftChars) || 0;
+    var docN = Number(opts.docChars) || 0;
+    var histN = Number(opts.historyN) || 0;
+    var card = opts.taskCard;
+    var hasCard = cardHasContent(card);
+    var pinAttached = pinN > 0 && !!pinRaw;
+    var lines = [
+      "【可用上下文清单】底稿/全文/任务卡/历史请 fetch_context；" +
+        "素材用 list_files / search_materials / read_file。" +
+        "用户已钉住时 pin 原文已附在下方（工作面），勿空编跑题。",
+      "- pin（钉住范围）：" +
+        (pinAttached
+          ? "有，约" + pinN + "字（首包已附）"
+          : pinN > 0
+            ? "有，约" + pinN + "字；请 fetch_context"
+            : "无"),
+      "- base_draft（用户已采用的结论底稿）：" +
+        (draftN > 0 ? "有，约" + draftN + "字；要则 fetch_context" : "无"),
+      "- task_card（任务卡）：" +
+        (hasCard ? "有；要则 fetch_context" : "无"),
+      "- history（近轮对话）：" + histN + " 条",
+      "- doc_full（当前完整正文）：" +
+        (docN > 0 ? "有，约" + docN + "字；要则 fetch_context 取全文" : "无")
+    ];
+    var focusLine = opts.focusLine ? String(opts.focusLine) : "";
+    var align = opts.allowEdit ? buildAlignHint(opts.intent || "outline") : "";
+    var pinBlock = "";
+    if (pinAttached) {
+      pinBlock =
+        "\n【钉住范围·本轮工作面】产出须紧贴此范围；" +
+        "若仅为标题/范围且其下尚无正文，请在其下充填可落稿表述（勿另起无关专名主题）；" +
+        "缺事实/数字先读素材再写，禁止无依据空编。\n" +
+        pinRaw.slice(0, 6000) +
+        "\n";
+    }
+    var block =
+      (focusLine ? "\n" + focusLine + "\n" : "") +
+      pinBlock +
+      "\n" +
+      lines.join("\n") +
+      "\n" +
+      align;
+    return {
+      block: block,
+      trace: {
+        intent: opts.intent || "outline",
+        confidence: opts.confidence != null ? opts.confidence : null,
+        soft: !!opts.soft,
+        mode: "inventory",
+        layers: pinAttached ? ["inventory", "pin"] : ["inventory"],
+        pinChars: pinN,
+        pinAttached: pinAttached,
+        draftChars: draftN,
+        docChars: docN,
+        historyN: histN,
+        hasCard: hasCard,
+        msgChars: String(opts.displayMsg || "").length
+      }
+    };
+  }
+
+  /** @deprecated 预灌全文已弃用；撰写主路径改用 buildContextInventory */
   function assembleWriteLayers(opts) {
     opts = opts || {};
-    var intent = opts.intent || "outline";
-    var cardBlock = renderTaskCard(opts.taskCard);
-    var focusLine = opts.focusLine ? "\n" + opts.focusLine + "\n" : "";
-    var baseLayer = opts.allowEdit ? buildBaseLayer(intent, opts.baseMd) : "";
-    var pin = opts.pinHint ? String(opts.pinHint) : "";
-    var align = opts.allowEdit ? buildAlignHint(intent) : "";
-    var block = focusLine + cardBlock + baseLayer + align + (pin ? pin + "\n" : "");
-    var trace = {
-      intent: intent,
-      confidence: opts.confidence != null ? opts.confidence : null,
-      soft: !!opts.soft,
-      layers: [],
-      baseDraftKind: inferDraftKind(opts.baseMd || ""),
-      clarify: false,
-      msgChars: String(opts.displayMsg || "").length
-    };
-    if (focusLine) trace.layers.push("focus");
-    if (cardBlock) trace.layers.push("L1");
-    if (baseLayer) {
-      trace.layers.push(intent === "lead" ? "L3toc" : "L3");
+    var pinRaw = opts.pinHint ? String(opts.pinHint) : "";
+    /* pinHint 可能已带【钉住范围】包装；优先用 pinText */
+    var pinText = String(opts.pinText || "").trim();
+    if (!pinText && pinRaw) {
+      pinText = pinRaw
+        .replace(/^[\s\S]*?【钉住范围】\s*/m, "")
+        .trim();
+      if (!pinText) pinText = pinRaw;
     }
-    if (pin) trace.layers.push("pin");
-    return { block: block, trace: trace };
+    var baseMd = String(opts.baseMd || "");
+    return buildContextInventory({
+      intent: opts.intent,
+      confidence: opts.confidence,
+      soft: opts.soft,
+      focusLine: opts.focusLine,
+      displayMsg: opts.displayMsg,
+      allowEdit: opts.allowEdit,
+      taskCard: opts.taskCard,
+      pinText: pinText,
+      pinChars: pinText.replace(/\s/g, "").length,
+      draftChars: baseMd.replace(/\s/g, "").length,
+      docChars: Number(opts.docChars) || 0,
+      historyN: Number(opts.historyN) || 0
+    });
   }
 
   function looksLikeWriteContinue(text) {
@@ -424,6 +510,7 @@
     pruneHistory: pruneHistory,
     stripHostMeta: stripHostMeta,
     assembleWriteLayers: assembleWriteLayers,
+    buildContextInventory: buildContextInventory,
     parseClarifyChoice: parseClarifyChoice,
     looksLikeWriteContinue: looksLikeWriteContinue,
     clarifyPrompt: clarifyPrompt,
