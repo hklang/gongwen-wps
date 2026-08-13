@@ -2,6 +2,7 @@
 """人机双写：按选中 md + 要求，调用 MiniMax 或 DeepSeek 生成方案/对话。"""
 from __future__ import annotations
 
+import difflib
 import importlib
 import json
 import logging
@@ -956,7 +957,9 @@ def _build_messages_single(
     context_after: str = "",
     materials=None,
 ) -> list:
-    mode = "校对润色" if tab == "proof" else "写作改写"
+    mode = (
+        "校对润色" if tab == "proof" else "精修改写" if tab == "suite" else "写作改写"
+    )
     req = (requirement or "").strip() or "在保持原意与公文语气的前提下给出可选写法"
     inv = _format_inventory(md)
     mats = _materials_block(materials)
@@ -976,13 +979,18 @@ def _build_messages_single(
         "4) 不要输出整篇公文，只输出该片段；"
         "5) 各套方案彼此应有差异；格式骨架与原文同构（标记种类与大致嵌套不变）；"
         "6) score/note/recommend 必须严肃区分优劣，不要全部打同分或随便推荐；"
-        "7) 【据实】若提供了【已引用素材】：方案中的数字、专名、时间必须能在素材中核对；"
-        "禁止编造素材没有的项目/数字；无对应依据处标【待核实】或只做表述优化；"
-        "若未提供素材：只许改写钉住原文的语气与句式，严禁新编事实、数字、专名；"
+        "7) 【据实】数字、专名、时间须有依据（素材或原文已有），禁止无中生有的项目/数据；"
+        "用户明确要求加入或改写的表述、修辞、句式必须写进 md 正文，这不算编造事实；"
+        "未提供素材时不新编事实与数字，但必须落实用户改写要求；"
         "8) 【零改动禁止】严禁任一方案在去掉空白后与「待替换原文」完全相同；"
         "用户哪怕只写「润色/优化/更简洁」，也必须落实为可感知改写（换词、调句、理顺逻辑至少一处）；"
         "不得以「保持原意」「无素材」为由原样返回选区。"
     )
+    if tab == "suite":
+        system += (
+            "9) 【精修】用户要求必须落实在 md 正文，禁止只改 note 不改 md；"
+            "按用户意见做的修辞、句式、结构调整不算编造事实、数字、专名。"
+        )
     ctx_b = (context_before or "").strip()
     ctx_a = (context_after or "").strip()
     user = (
@@ -1002,8 +1010,10 @@ def _build_messages_single(
         )
     user += (
         f"待替换的原文 md 片段：\n{md}\n\n"
-        "输出前自检：每一套 md 在去掉全部空白后，必须与原文不同；"
-        "若自检发现相同，请立刻改写后再输出 JSON。"
+        "输出前自检：每一套 md 必须落实上面的「要求」；"
+        "若要求含加入/补充/添加，正文须比原文明显更长，且能看出所加内容；"
+        "若要求含简洁/删繁/精简，正文须明显短于原文；"
+        "去掉空白后不得与原文九成相似；若自检未落实，请立刻改写后再输出 JSON。"
     )
     return [
         {"role": "system", "content": system},
@@ -1019,7 +1029,9 @@ def _build_messages_headings(
     round_n: int,
     materials=None,
 ) -> list:
-    mode = "校对润色" if tab == "proof" else "写作改写"
+    mode = (
+        "校对润色" if tab == "proof" else "精修改写" if tab == "suite" else "写作改写"
+    )
     req = (requirement or "").strip() or "统一润色这些同级小标题，保持序号风格与公文语气"
     n = len(items)
     inv = _format_inventory("\n".join(items))
@@ -1036,10 +1048,14 @@ def _build_messages_headings(
         f"4) {_FORMAT_RULES}"
         "5) 不要输出正文段落，只输出这些标题行；"
         "6) 各套应有可感知差异；评分与推荐要能分出高下；"
-        "7) 【据实】若提供了引用素材：标题用语须能与素材主题对齐，禁止空泛堆砌或编造素材没有的专名；"
-        "若未提供素材：只改表述与对仗，严禁新编事实；"
+        "7) 【据实】标题用语须能与素材或原文主题对齐，禁止编造素材没有的专名；"
+        "用户明确要求的改写必须落实在 items 正文；"
         "8) 【零改动禁止】严禁整套 items 去掉空白后与原文完全相同。"
     )
+    if tab == "suite":
+        system += (
+            "9) 【精修】必须落实用户要求，禁止只改 note 不改 items。"
+        )
     listed = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(items))
     user = (
         f"任务：{mode}（同级标题一组）\n"
@@ -1736,6 +1752,54 @@ def chat(
     }
 
 
+def _norm_opt_md(s: str) -> str:
+    return re.sub(r"\s+", "", str(s or ""))
+
+
+def _opt_body_text(o: dict) -> str:
+    if o.get("items"):
+        return "\n\n".join(str(x) for x in o["items"])
+    return str(o.get("md") or "")
+
+
+def _req_kind(req: str) -> str:
+    r = req or ""
+    if re.search(r"加入|增加|加上|补充|添加|插入", r):
+        return "add"
+    if re.search(r"简洁|删繁|精简|压缩|缩短|简短", r):
+        return "short"
+    return "rewrite"
+
+
+def _too_similar(src: str, body: str) -> bool:
+    a = _norm_opt_md(src)
+    b = _norm_opt_md(body)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.90
+
+
+def _options_unfulfilled(opts: list, src: str, req: str) -> bool:
+    """方案未落实用户要求：过像原文 / 该加不加 / 该短不短 / 各套雷同。"""
+    if not opts:
+        return True
+    bodies = [_opt_body_text(o) for o in opts]
+    kind = _req_kind(req)
+    src_len = len(_norm_opt_md(src))
+    for b in bodies:
+        if _too_similar(src, b):
+            return True
+        n = len(_norm_opt_md(b))
+        if kind == "add" and n < src_len + 8:
+            return True
+        if kind == "short" and n > max(8, int(src_len * 0.92)):
+            return True
+    norms = [_norm_opt_md(b) for b in bodies]
+    return len(norms) >= 2 and len(set(norms)) == 1
+
+
 def generate_options(
     md: str,
     requirement: str = "",
@@ -1768,7 +1832,7 @@ def generate_options(
             "capability": capability or "",
         })
     n = max(1, min(6, int(count or 3)))
-    tab = "proof" if tab == "proof" else "write"
+    tab = tab if tab in ("proof", "suite", "write") else "write"
     round_n = max(0, int(round_n or 0))
     item_list = [str(x).strip() for x in (items or []) if str(x).strip()]
     chat_kw = {
@@ -1776,31 +1840,23 @@ def generate_options(
         "model": model,
         "cwd": cwd,
         "capability": capability,
-        "temperature": 0.5 if _want_thinking(model, capability) else 0.3,
+        "temperature": 0.55 if tab == "suite" else (0.5 if _want_thinking(model, capability) else 0.3),
     }
 
-    def _norm_md(s: str) -> str:
-        return re.sub(r"\s+", "", str(s or ""))
-
-    def _opt_body(o: dict) -> str:
-        if o.get("items"):
-            return "\n\n".join(str(x) for x in o["items"])
-        return o.get("md") or ""
-
-    def _all_same_as_src(opts: list[dict], src: str) -> bool:
-        src_n = _norm_md(src)
-        if not src_n:
-            return False
-        return all(_norm_md(_opt_body(o)) == src_n for o in opts)
-
     def _retry_req(req: str) -> str:
+        kind = _req_kind(req)
+        extra = {
+            "add": "本轮是加入/补充：每套必须写出新增内容，正文须比原文更长，禁止只换近义词。",
+            "short": "本轮是删繁就简：每套必须明显短于原文，禁止只换近义词。",
+            "rewrite": "本轮须有可感知改写，禁止与原文九成相同。",
+        }[kind]
         return (
             str(req or "").strip()
-            + "\n\n【系统重试】上一轮方案与原文完全相同，不合格。"
-            "请重新给出 "
+            + "\n\n【系统重试】上一轮未落实用户要求，不合格。请重新给出 "
             + str(n)
-            + " 套有实质改动的替换（用词/句式/条理必须变化），"
-            "严禁再输出与原文去空白后相同的文本。"
+            + " 套。"
+            "用户要求必须写进每套 md，禁止只写在 note 里。"
+            + extra
         )
 
     if len(item_list) >= 2:
@@ -1827,7 +1883,7 @@ def generate_options(
             **chat_kw,
         )
         options = _build_heading_opts(raw)
-        if _all_same_as_src(options, src_join):
+        if _options_unfulfilled(options, src_join, requirement):
             raw2 = _chat(
                 _build_messages_headings(
                     item_list, _retry_req(requirement), n, tab, round_n + 1,
@@ -1836,8 +1892,7 @@ def generate_options(
                 **chat_kw,
             )
             options2 = _build_heading_opts(raw2)
-            if not _all_same_as_src(options2, src_join):
-                options = options2
+            options = options2
         return {"ok": True, "options": options, "provider": _provider(provider)}
 
     md = (md or "").strip()
@@ -1866,8 +1921,8 @@ def generate_options(
     )
     raw = _chat(msgs, **chat_kw)
     options = _build_options(raw)
-    # 零改动：强制再要一轮可感知改写（精修核心）
-    if _all_same_as_src(options, md):
+    # 零改动/未落实要求：强制再要一轮可感知改写（精修核心）
+    if _options_unfulfilled(options, md, requirement):
         raw2 = _chat(
             _build_messages_single(
                 md,
@@ -1882,6 +1937,5 @@ def generate_options(
             **chat_kw,
         )
         options2 = _build_options(raw2)
-        if not _all_same_as_src(options2, md):
-            options = options2
+        options = options2
     return {"ok": True, "options": options, "provider": _provider(provider)}

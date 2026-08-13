@@ -1,6 +1,6 @@
 /**
  * Quality Kernel · 商用写作品质内核（与 Context Kernel 联合）
- * 规格：specs/2026-08-12-WPS写作聪明程度方案.md
+ * 规格：specs/2026-08-12-08-WPS写作聪明程度方案.md
  * 能力：风格指纹 · 写前对齐 · 出稿质检（宿主侧，默认无第二模型税）
  */
 (function (global) {

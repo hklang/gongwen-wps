@@ -1,6 +1,6 @@
 /**
  * Context Kernel M1 — 焦点跟本轮意图走
- * 规格：specs/2026-08-12-WPS对话上下文方案.md
+ * 规格：specs/2026-08-12-07-WPS对话上下文方案.md
  */
 (function (global) {
   var TASK_PIN_RE =

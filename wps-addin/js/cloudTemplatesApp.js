@@ -1,6 +1,6 @@
 /**
  * 云端双轨模板窗 — 对齐原 editor tplModal：分组 + 文种药丸 + 列表 + 预览
- * 见 specs/2026-08-13-WPS云端模板一对一复刻.md
+ * 见 specs/2026-08-13-04-WPS云端模板一对一复刻.md
  */
 (function (global) {
   var state = {

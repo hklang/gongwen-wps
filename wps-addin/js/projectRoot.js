@@ -12,6 +12,9 @@
   var MATERIAL_DIR = "素材";
   var TEMPLATE_DIR = "模板";
   var VERSION_DIR = "版本";
+  var VERSION_BOOKMARK = "书签";
+  var VERSION_AUTO = "自动";
+  var AUTO_VERSION_KEEP = 10;
   var META_DIR = ".gongwen";
   var LIST_RE = /\.docx?$/i;
   var OFFICE_RE = /\.docx?$/i;
@@ -381,6 +384,12 @@
         if (fsMkdir(p) && fsExists(p)) created.push(sub);
         else missing.push(sub);
       });
+      [VERSION_BOOKMARK, VERSION_AUTO].forEach(function (sub) {
+        var p = joinRoot(r, VERSION_DIR + "\\" + sub);
+        if (fsExists(p)) return;
+        if (fsMkdir(p) && fsExists(p)) created.push(VERSION_DIR + "/" + sub);
+        else missing.push(VERSION_DIR + "/" + sub);
+      });
       try {
         var meta = joinRoot(r, META_DIR + "\\wps.json");
         if (!fsExists(meta)) {
@@ -540,6 +549,17 @@
     return abs;
   }
 
+  function relExists(rel) {
+    var abs = absFromRel(rel);
+    return !!(abs && fsExists(abs));
+  }
+
+  /** 自动档：文件还在即可还。份数上限由 prune 删旧，不在这里用名单卡灰。 */
+  function isAutoRestoreable(relPath) {
+    var rel = normRel(relPath);
+    return !!(rel && relExists(rel));
+  }
+
   function readIndex() {
     try {
       var raw = storeGet(INDEX_KEY);
@@ -563,7 +583,7 @@
 
   function listFilesInFolder(absDir, relPrefix, limit, nameRe) {
     var out = [];
-    var max = limit || 40;
+    var max = !limit || limit <= 0 ? 1e9 : limit;
     var re = nameRe || LIST_RE;
     var names = fsReaddirNames(absDir);
     if (!names) return out;
@@ -586,11 +606,87 @@
     return out;
   }
 
+  function sortByMtimeDesc(arr) {
+    return (arr || []).slice().sort(function (a, b) {
+      var mb = Number(b.mtime) || 0;
+      var ma = Number(a.mtime) || 0;
+      /* stat 失败时 mtime=0，当作刚写入，避免刚存的档被排到最旧再删掉 */
+      if (!mb) mb = 1e15;
+      if (!ma) ma = 1e15;
+      return mb - ma;
+    });
+  }
+
+  /** 自动档文件名以 YYYYMMDD-HHMMSS_ 开头，比 mtime 可靠 */
+  function stampFromRel(rel) {
+    var n = baseName(rel);
+    var m = /^(\d{8}-\d{6})/.exec(n);
+    return m ? m[1] : "";
+  }
+
+  function sortAutoNewest(arr) {
+    return (arr || []).slice().sort(function (a, b) {
+      var sb = stampFromRel(b.path);
+      var sa = stampFromRel(a.path);
+      if (sb !== sa) return sb > sa ? 1 : -1;
+      var mb = Number(b.mtime) || 0;
+      var ma = Number(a.mtime) || 0;
+      if (!mb) mb = 1e15;
+      if (!ma) ma = 1e15;
+      return mb - ma;
+    });
+  }
+
+  function listVersionLanes(root) {
+    var bookmarks = listFilesInFolder(
+      joinRoot(root, VERSION_DIR + "\\" + VERSION_BOOKMARK),
+      VERSION_DIR + "/" + VERSION_BOOKMARK,
+      60,
+      LIST_RE
+    );
+    var legacy = listFilesInFolder(
+      joinRoot(root, VERSION_DIR),
+      VERSION_DIR,
+      60,
+      LIST_RE
+    );
+    legacy.forEach(function (it) {
+      it.legacyFlat = true;
+      it.lane = "bookmark";
+    });
+    bookmarks.forEach(function (it) {
+      it.lane = "bookmark";
+      it.restoreable = true;
+    });
+    legacy.forEach(function (it) {
+      it.restoreable = true;
+    });
+    var autos = sortAutoNewest(
+      listFilesInFolder(
+        joinRoot(root, VERSION_DIR + "\\" + VERSION_AUTO),
+        VERSION_DIR + "/" + VERSION_AUTO,
+        200,
+        LIST_RE
+      )
+    );
+    autos.forEach(function (it) {
+      it.lane = "auto";
+      it.restoreable = true;
+    });
+    var allBookmarks = sortByMtimeDesc(bookmarks.concat(legacy));
+    return {
+      bookmarks: allBookmarks,
+      autos: autos,
+      versions: allBookmarks.concat(autos)
+    };
+  }
+
   function listFromDisk(root) {
     if (!hasDiskApi() || !root) return null;
     try {
       if (!fsExists(root)) return null;
       var via = getWpsFs() ? "wpsfs" : "fso";
+      var lanes = listVersionLanes(root);
       return {
         docs: listFilesInFolder(root, "", 30, LIST_RE),
         materials: listFilesInFolder(
@@ -605,12 +701,9 @@
           40,
           READABLE_RE
         ),
-        versions: listFilesInFolder(
-          joinRoot(root, VERSION_DIR),
-          VERSION_DIR,
-          40,
-          LIST_RE
-        ),
+        versions: lanes.versions,
+        versionBookmarks: lanes.bookmarks,
+        versionAutos: lanes.autos,
         via: via
       };
     } catch (e) {
@@ -620,11 +713,14 @@
 
   function listFromIndex() {
     var idx = readIndex();
+    var versions = idx.versions || [];
     return {
       docs: idx.docs || [],
       materials: idx.materials || [],
       templates: idx.templates || [],
-      versions: idx.versions || [],
+      versions: versions,
+      versionBookmarks: versions,
+      versionAutos: [],
       via: "index"
     };
   }
@@ -642,6 +738,8 @@
         materials: [],
         templates: [],
         versions: [],
+        versionBookmarks: [],
+        versionAutos: [],
         source: resolved.source
       };
     }
@@ -654,7 +752,9 @@
       docs: listed.docs,
       materials: listed.materials,
       templates: listed.templates,
-      versions: listed.versions,
+      versions: listed.versions || [],
+      versionBookmarks: listed.versionBookmarks || [],
+      versionAutos: listed.versionAutos || [],
       via: listed.via,
       fso: hasDiskApi(),
       disk: hasDiskApi()
@@ -1094,12 +1194,14 @@
   }
 
   /**
-   * 将当前窗口活动文档存一份到 版本/，文件名：日期时间_原文件名
-   * 优先：磁盘复制；其次 SaveAs2 到版本后再还原原路径。
+   * 存版本到指定轨：书签=用户手动；自动=AI落稿。
+   * 优先磁盘复制，其次 SaveCopyAs / SaveAs2。
    */
-  function saveActiveToVersion() {
+  function saveToVersionLane(lane) {
     var steps = [];
     try {
+      var sub = lane === "auto" ? VERSION_AUTO : VERSION_BOOKMARK;
+      var laneRel = VERSION_DIR + "/" + sub;
       var resolved = resolveRoot();
       var root = resolved.root;
       if (!root) {
@@ -1112,8 +1214,9 @@
       }
       ensureProjectLayout(root);
       steps.push("root=" + root);
+      steps.push("lane=" + laneRel);
 
-      var verDir = joinRoot(root, VERSION_DIR);
+      var verDir = joinRoot(root, VERSION_DIR + "\\" + sub);
       if (!fsExists(verDir) && !fsMkdir(verDir)) {
         return { ok: false, error: "无法创建版本目录：\n" + verDir };
       }
@@ -1140,13 +1243,14 @@
       if (!/\.docx?$/i.test(rawName)) rawName = rawName + ".docx";
 
       var outName = versionTimeStamp() + "_" + safeFileName(rawName);
-      var rel = normRel(VERSION_DIR + "/" + outName);
+      var rel = normRel(laneRel + "/" + outName);
       var abs = joinRoot(root, rel);
       steps.push("target=" + abs);
 
-      var hasDiskPath = !!(full && /[\\\/]/.test(full) && full !== rawName);
+      var hasDiskPath = !!(full && /[\\/]/.test(full) && full !== rawName);
+      var saved = false;
+      var via = "";
 
-      // A) 已落盘：Save 后 FileSystem 复制（不改当前路径）
       if (hasDiskPath) {
         try {
           if (!wasSaved) doc.Save();
@@ -1154,68 +1258,196 @@
           steps.push("Save原稿失败:" + (eSave.message || eSave));
         }
         if (fsCopyFile(full, abs) && fsExists(abs)) {
-          return { ok: true, path: rel, abs: abs, via: "copy" };
+          saved = true;
+          via = "copy";
+        } else {
+          steps.push("copy失败");
         }
-        steps.push("copy失败");
       } else {
         steps.push("原稿未落盘");
       }
 
-      // B) SaveCopyAs
-      try {
-        doc.SaveCopyAs(abs);
-        if (fsExists(abs)) {
-          return { ok: true, path: rel, abs: abs, via: "SaveCopyAs" };
+      if (!saved) {
+        try {
+          doc.SaveCopyAs(abs);
+          if (fsExists(abs)) {
+            saved = true;
+            via = "SaveCopyAs";
+          } else {
+            steps.push("SaveCopyAs无文件");
+          }
+        } catch (eCopyAs) {
+          steps.push("SaveCopyAs:" + (eCopyAs.message || eCopyAs));
         }
-        steps.push("SaveCopyAs无文件");
-      } catch (eCopyAs) {
-        steps.push("SaveCopyAs:" + (eCopyAs.message || eCopyAs));
       }
 
-      // C) SaveAs2 到版本 → 再 SaveAs2 回原路径
-      if (hasDiskPath) {
+      if (!saved && hasDiskPath) {
         var r1 = callDocSaveAs(doc, abs);
         steps.push("存版本:" + (r1.via || r1.error || "?"));
         if (r1.ok && fsExists(abs)) {
+          saved = true;
+          via = "SaveAs2-restore";
           var r2 = callDocSaveAs(doc, full);
           steps.push("还原:" + (r2.via || r2.error || "?"));
           try {
             if (wasSaved) doc.Saved = true;
           } catch (eSaved) {}
-          if (r2.ok) {
-            return { ok: true, path: rel, abs: abs, via: "SaveAs2-restore" };
+          if (!r2.ok) {
+            via = "SaveAs2";
           }
-          return {
-            ok: true,
-            path: rel,
-            abs: abs,
-            via: "SaveAs2",
-            warn: "版本已写入，但还原原稿路径失败，请确认当前窗口是否仍是原文件"
-          };
         }
-      } else {
+      } else if (!saved) {
         var rNew = callDocSaveAs(doc, abs);
         if (rNew.ok && fsExists(abs)) {
-          return {
-            ok: true,
-            path: rel,
-            abs: abs,
-            via: rNew.via,
-            warn: "原稿尚未存盘，已直接存到版本；当前窗口现为该版本文件"
-          };
+          saved = true;
+          via = rNew.via;
+          steps.push("新稿另存成功");
+        } else {
+          steps.push("新稿另存:" + (rNew.error || "失败"));
         }
-        steps.push("新稿另存:" + (rNew.error || "失败"));
       }
 
-      return {
-        ok: false,
-        error: "存版本失败\n目标：" + abs + "\n" + steps.join("\n")
-      };
+      if (!saved) {
+        return {
+          ok: false,
+          error: "存版本失败\n目标：" + abs + "\n" + steps.join("\n")
+        };
+      }
+
+      var result = { ok: true, path: rel, abs: abs, via: via, lane: laneRel };
+      if (lane === "auto") {
+        result.pruned = pruneAutoVersions(root, rel);
+      }
+      return result;
     } catch (e) {
       return {
         ok: false,
         error: "存版本异常：" + String(e.message || e) + "\n" + steps.join("\n")
       };
+    }
+  }
+
+  function saveBookmarkVersion() {
+    return saveToVersionLane("bookmark");
+  }
+
+  /** 兼容旧名：头栏/工程栏「存版本」= 书签 */
+  function saveActiveToVersion() {
+    return saveBookmarkVersion();
+  }
+
+  function saveAutoVersion() {
+    return saveToVersionLane("auto");
+  }
+
+  /** 自动轨只保留最近 AUTO_VERSION_KEEP 份，按文件名时间戳删旧；刚写入的 keepRel 永不删 */
+  function pruneAutoVersions(root, keepRel) {
+    var dir = joinRoot(root, VERSION_DIR + "\\" + VERSION_AUTO);
+    if (!fsExists(dir)) return { removed: 0 };
+    var files = sortAutoNewest(
+      listFilesInFolder(
+        dir,
+        VERSION_DIR + "/" + VERSION_AUTO,
+        0,
+        LIST_RE
+      )
+    );
+    var keep = normRel(keepRel || "");
+    var removed = 0;
+    var i;
+    for (i = 0; i < files.length; i++) {
+      if (keep && files[i].path === keep) continue;
+      if (i < AUTO_VERSION_KEEP) continue;
+      var del = deleteRel(files[i].path);
+      if (del && del.ok) removed++;
+    }
+    return {
+      removed: removed,
+      kept: Math.min(files.length, AUTO_VERSION_KEEP)
+    };
+  }
+
+  /** 恢复某版本覆盖当前活动稿。文件还在即可还。 */
+  function restoreVersionToActive(relPath) {
+    try {
+      var root = resolveRoot().root;
+      if (!root) return { ok: false, error: "无工程根" };
+      var rel = normRel(relPath);
+      if (!rel) return { ok: false, error: "路径无效" };
+
+      var app = global.Application;
+      if (!app || !app.ActiveDocument) {
+        return { ok: false, error: "当前无打开文档" };
+      }
+      var doc = app.ActiveDocument;
+      var full = "";
+      var wasSaved = true;
+      try {
+        full = String(doc.FullName || "");
+      } catch (e1) {}
+      try {
+        wasSaved = doc.Saved !== false;
+      } catch (e2) {}
+
+      if (!full || !/[\\/]/.test(full)) {
+        return { ok: false, error: "请先保存当前文档到工程目录后再恢复" };
+      }
+
+      var srcAbs = joinRoot(root, rel);
+      if (!fsExists(srcAbs)) {
+        return { ok: false, error: "版本文件不存在：" + rel };
+      }
+
+      // 先备份当前稿到自动轨
+      var backup = saveAutoVersion();
+      if (!backup.ok) {
+        return {
+          ok: false,
+          error: "恢复前备份失败：" + (backup.error || "")
+        };
+      }
+
+      if (!wasSaved) {
+        try {
+          doc.Save();
+        } catch (eSave) {
+          return { ok: false, error: "请先保存当前修改后再恢复" };
+        }
+      }
+
+      try {
+        doc.Close(0);
+      } catch (eClose) {
+        return {
+          ok: false,
+          error: "无法关闭当前文档：" + String(eClose.message || eClose)
+        };
+      }
+
+      if (!fsCopyFile(srcAbs, full)) {
+        try {
+          app.Documents.Open(full);
+        } catch (eRe) {}
+        return { ok: false, error: "复制版本文件失败" };
+      }
+
+      try {
+        app.Documents.Open(full);
+      } catch (eOpen) {
+        return {
+          ok: false,
+          error: "已覆盖文件但重新打开失败：" + String(eOpen.message || eOpen)
+        };
+      }
+
+      return {
+        ok: true,
+        restored: rel,
+        active: full,
+        backup: backup.path
+      };
+    } catch (e) {
+      return { ok: false, error: String(e.message || e) };
     }
   }
 
@@ -1311,8 +1543,14 @@
     getCitePaths: getCitePaths,
     setCitePaths: setCitePaths,
     absFromRel: absFromRel,
+    relExists: relExists,
+    isAutoRestoreable: isAutoRestoreable,
     openInWpsReadOnly: openInWpsReadOnly,
     saveActiveToVersion: saveActiveToVersion,
+    saveBookmarkVersion: saveBookmarkVersion,
+    saveAutoVersion: saveAutoVersion,
+    restoreVersionToActive: restoreVersionToActive,
+    AUTO_VERSION_KEEP: AUTO_VERSION_KEEP,
     addCite: addCite,
     removeCite: removeCite,
     loadCitedMaterials: loadCitedMaterials,

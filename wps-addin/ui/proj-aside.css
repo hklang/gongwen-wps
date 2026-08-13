@@ -318,3 +318,15 @@ body.proj-aside-resizing .proj-aside-resize::after {
 .file-ctx-menu button[data-file-del] {
   color: #be123c;
 }
+.file-ctx-menu button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: #94a3b8;
+}
+.file-ctx-menu button:disabled:hover {
+  background: transparent;
+  color: #94a3b8;
+}
+.file-item.dim-restore {
+  opacity: 0.72;
+}

@@ -13,6 +13,7 @@
   <script type="text/javascript" src="../js/account.js"></script>
   <script type="text/javascript" src="../js/settingsStore.js"></script>
   <script type="text/javascript" src="../js/settingsOpen.js"></script>
+  <script type="text/javascript" src="../js/cloudTemplatesOpen.js"></script>
   <script type="text/javascript" src="../js/projectRoot.js"></script>
   <script type="text/javascript" src="../js/materialIndex.js"></script>
   <script type="text/javascript" src="../js/materialTools.js"></script>
@@ -70,7 +71,7 @@
             <span class="ai-sel-x" id="aiSelClear" hidden title="清除">×</span>
           </button>
           <button type="button" class="ai-sel-btn primary-ish" id="aiSelCommit" title="把当前划选钉到右侧">钉住</button>
-          <button type="button" class="ai-reselect" id="aiRestore" title="还原为出方案前的原文" hidden>还原</button>
+          <button type="button" class="ai-reselect" id="aiRestore" title="还原为出方案前的选区原文" hidden>还原选区</button>
         </div>
         <label class="ai-expand-sib" id="aiExpandSibWrap" hidden title="钉住时并入同级标题">
           <input type="checkbox" id="aiExpandSib" />
@@ -98,6 +99,7 @@
       </div>
       <textarea class="ai-req" id="aiReq" rows="3" placeholder="补充要求，如组数、侧重…"></textarea>
       <div class="ai-toolbar">
+        <button type="button" id="aiClearChat" class="ai-clear-link" title="清空当前页签对话，正文不动">清空对话</button>
         <label class="ai-chat-auth" id="aiWantDraftWrap" title="勾选后出可落点的结论；勾选时会自动勾上「多份」">
           <input type="checkbox" id="aiWantDraft" checked />
           <span>出结论</span>
@@ -106,9 +108,11 @@
           <input type="checkbox" id="aiWantVariants" checked />
           <span>多份</span>
         </label>
-        <span class="ai-suite-hint" id="aiSuiteHint" hidden>精修：钉住选区后改写选定</span>
-        <button type="button" id="aiClearChat">清空</button>
         <span class="spacer"></span>
+        <label class="ai-chat-auth" id="aiThinkWrap" title="勾选后走增强思考，更慢更稳；默认关闭求快">
+          <input type="checkbox" id="aiThinkSlow" />
+          <span>思考（慢）</span>
+        </label>
         <button type="button" class="primary" id="aiSend">发送</button>
       </div>
       <div class="ai-compose-foot" id="aiComposeFoot">

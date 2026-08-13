@@ -84,10 +84,10 @@
         '<button type="button" class="file-sec-act" data-cloud-templates ' +
         'title="浏览云端骨架并下载到本机模板夹">☁ 云端</button>';
     }
-    if (key === "versions") {
+    if (key === "versionBookmarks") {
       html +=
         '<button type="button" class="file-sec-act" data-save-version ' +
-        'title="把当前窗口打开的文档存一份到版本文件夹">存版本</button>';
+        'title="把当前窗口文档存到「书签」轨（不会被自动清理）">存版本</button>';
     }
     html += '</div><div class="file-sec-body">';
     if (!list.length) {
@@ -98,9 +98,11 @@
             ? "仅显示 doc / docx；放入「素材」后刷新"
             : key === "templates"
               ? "点「☁ 云端」下载；右键「引用」或「用 WPS 打开」"
-              : key === "versions"
-                ? "点「存版本」保存当前文档快照"
-                : "（空）")) +
+              : key === "versionBookmarks"
+                ? "点「存版本」钉住里程碑"
+                : key === "versionAutos"
+                  ? "落稿前自动保留；近10次可恢复"
+                  : "（空）")) +
         "</div>";
     } else {
       list.forEach(function (it) {
@@ -108,18 +110,26 @@
         var act = it.activeTemplate ? " active-tpl" : "";
         var sel =
           GwProject.normRel(it.path) === state.asideSelectedRel ? " selected" : "";
+        var dim =
+          it.lane === "auto" && it.restoreable === false ? " dim-restore" : "";
         var titleText = String(it.title || it.path || "");
         var short = titleText.length > 28 ? titleText.slice(0, 27) + "…" : titleText;
         var badge = it.current ? " · 当前" : "";
+        if (it.legacyFlat) badge += " · 旧";
         var rel = escapeHtml(String(it.path || ""));
+        var restoreAttr =
+          it.restoreable === false ? ' data-restoreable="0"' : ' data-restoreable="1"';
         html +=
           '<div class="file-item' +
           cur +
           act +
           sel +
+          dim +
           '" data-rel="' +
           rel +
-          '" title="' +
+          '"' +
+          restoreAttr +
+          ' title="' +
           rel +
           '"><button type="button" class="file-item-main" data-open-rel="' +
           rel +
@@ -179,7 +189,12 @@
       renderFileSection("docs", "文稿", data.docs, docsEmpty) +
       renderFileSection("materials", "素材", data.materials) +
       renderFileSection("templates", "模板", data.templates) +
-      renderFileSection("versions", "版本", data.versions);
+      renderFileSection(
+        "versionBookmarks",
+        "书签",
+        data.versionBookmarks || [],
+        "点「存版本」钉住里程碑"
+      );
     if (!quiet) {
       var src =
         data.source === "active"
@@ -258,7 +273,11 @@
     state.fileCtxRel = "";
   }
 
-  function showFileCtxMenu(x, y, rel) {
+  function isVersionRel(rel) {
+    return /^版本\//.test(String(rel || ""));
+  }
+
+  function showFileCtxMenu(x, y, rel, restoreable) {
     var menu = $("fileCtxMenu");
     if (!menu) {
       menu = document.createElement("div");
@@ -266,12 +285,27 @@
       menu.className = "file-ctx-menu";
       document.body.appendChild(menu);
     }
-    menu.innerHTML =
-      '<button type="button" data-file-open>用 WPS 打开</button>' +
-      '<button type="button" data-file-cite>引用</button>' +
-      '<button type="button" data-file-style>设为参照稿</button>' +
-      '<button type="button" data-file-del>删除</button>';
     var pathRel = GwProject.normRel(rel);
+    var isVer = isVersionRel(pathRel);
+    var canRestore = restoreable !== false && restoreable !== "0";
+    if (isVer) {
+      menu.innerHTML =
+        '<button type="button" data-file-open>用 WPS 打开</button>' +
+        '<button type="button" data-file-restore' +
+        (canRestore ? "" : " disabled") +
+        ' title="' +
+        (canRestore
+          ? "用该版本覆盖当前窗口文档"
+          : "仅最近 10 份自动版本可恢复") +
+        '">恢复到当前文档</button>' +
+        '<button type="button" data-file-del>删除</button>';
+    } else {
+      menu.innerHTML =
+        '<button type="button" data-file-open>用 WPS 打开</button>' +
+        '<button type="button" data-file-cite>引用</button>' +
+        '<button type="button" data-file-style>设为参照稿</button>' +
+        '<button type="button" data-file-del>删除</button>';
+    }
     state.fileCtxRel = pathRel;
     state.asideSelectedRel = pathRel;
     state.fileCtxIgnoreUntil = Date.now() + 400;
@@ -295,10 +329,40 @@
         var s = GwProject.setStyleRef(pathRel);
         if (!s.ok) setStatus(s.error || "设参照失败", "err");
         else setStatus("已设参照稿：" + shortName(pathRel) + " · 学口气不照抄", "ok");
+      } else if (act === "restore") {
+        if (!canRestore) {
+          setStatus("仅最近 10 份自动版本可恢复", "warn");
+          return;
+        }
+        if (
+          !window.confirm(
+            "用该版本覆盖当前窗口文档？\n当前内容会先再存一档自动备份。\n\n" +
+              pathRel
+          )
+        ) {
+          return;
+        }
+        setStatus("正在恢复…", "");
+        var rv;
+        try {
+          rv = GwProject.restoreVersionToActive(pathRel);
+        } catch (err) {
+          setStatus("恢复异常：" + (err.message || err), "err");
+          return;
+        }
+        if (!rv || !rv.ok) {
+          setStatus((rv && rv.error) || "恢复失败", "err");
+          try {
+            if (rv && rv.error) alert(rv.error);
+          } catch (a0) {}
+          return;
+        }
+        renderProjectFiles(true);
+        setStatus("已恢复 · 备份：" + shortName(rv.backup || ""), "ok");
       } else if (act === "del") {
         if (!window.confirm("删除工程内文件？\n" + pathRel)) return;
         var d = GwProject.deleteRel(pathRel);
-    if (!d.ok) setStatus(d.error || "删除失败", "err");
+        if (!d.ok) setStatus(d.error || "删除失败", "err");
         else {
           GwProject.removeCite(pathRel);
           if (GwProject.clearTextCache) GwProject.clearTextCache(pathRel);
@@ -326,6 +390,17 @@
     menu.querySelectorAll("[data-file-style]").forEach(function (btn) {
       btn.onclick = function (e) {
         runAct("style", e);
+      };
+    });
+    menu.querySelectorAll("[data-file-restore]").forEach(function (btn) {
+      btn.onclick = function (e) {
+        if (btn.disabled) {
+          e.preventDefault();
+          e.stopPropagation();
+          setStatus("仅最近 10 份自动版本可恢复", "warn");
+          return;
+        }
+        runAct("restore", e);
       };
     });
     menu.querySelectorAll("[data-file-del]").forEach(function (btn) {
@@ -455,7 +530,7 @@
         }
         renderProjectFiles(true);
         if (sv.warn) setStatus(sv.warn + " → " + shortName(sv.path), "warn");
-        else setStatus("已存版本：" + shortName(sv.path), "ok");
+        else setStatus("已存书签：" + shortName(sv.path), "ok");
         return;
       }
       var head = e.target.closest("[data-sec-toggle]");
@@ -492,7 +567,7 @@
       var item = e.target.closest("[data-rel]");
       if (!item) return;
       e.preventDefault();
-      showFileCtxMenu(e.clientX, e.clientY, item.getAttribute("data-rel"));
+      showFileCtxMenu(e.clientX, e.clientY, item.getAttribute("data-rel"), item.getAttribute("data-restoreable"));
     });
 
     document.addEventListener(

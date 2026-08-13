@@ -55,7 +55,7 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   align-items: center;
   gap: 4px;
   min-width: 0;
-  max-width: 58%;
+  max-width: 72%;
 }
 #aiAside .ai-session-sel {
   min-width: 0;
@@ -662,9 +662,55 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   padding: 0 10px;
   cursor: pointer;
 }
-#aiAside .ai-reselect.show { display: inline-flex; }
+#aiAside .ai-reselect[hidden] {
+  display: none !important;
+}
+#aiAside .ai-reselect.show {
+  display: inline-flex !important;
+}
 #aiAside .ai-reselect:hover { background: #e7e5e4; }
 #aiAside .ai-reselect:disabled { opacity: .45; cursor: not-allowed; }
+#aiAside .ai-turn-restore {
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+#aiAside .ai-turn-restore button {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f3d56;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+#aiAside .ai-turn-restore button:hover:not(:disabled) {
+  background: #e8f2f7;
+}
+#aiAside .ai-turn-restore button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+#aiAside .suite-turns {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e7e5e4;
+}
+#aiAside .ai-opt.suite-hist {
+  margin-top: 8px;
+  opacity: 0.92;
+  border-style: dashed;
+}
+#aiAside .ai-hist-note {
+  font-size: 12px;
+  color: #78716c;
+}
+#aiAside .ai-empty.suite-repin-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: #64748b;
+}
 #aiAside .ai-req {
   width: 100%;
   min-height: 72px;
@@ -763,6 +809,19 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   background: #0f3d56;
   border-color: #0f3d56;
   color: #fff;
+}
+#aiAside .ai-toolbar button.ai-clear-link {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font-weight: 500;
+  font-size: 12px;
+}
+#aiAside .ai-toolbar button.ai-clear-link:hover {
+  color: #b91c1c;
+  background: transparent;
 }
 #aiAside .ai-toolbar button:disabled { opacity: 0.45; cursor: not-allowed; }
 #aiAside .ai-chat-edit-bar {
@@ -923,12 +982,6 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   font-size: 11px;
   border-radius: 4px;
 }
-#aiAside .ai-suite-hint {
-  font-size: 12px;
-  color: #78716c;
-  white-space: nowrap;
-}
-#aiAside .ai-suite-hint[hidden] { display: none !important; }
 #aiAside .ai-proof-bar {
   flex: 0 0 auto;
   padding: 8px 10px;

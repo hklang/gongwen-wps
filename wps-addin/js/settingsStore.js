@@ -1,6 +1,6 @@
 /**
  * 设置 v2：场景引擎 + 词库 + 数据核验表；本机 PluginStorage / localStorage
- * 见 specs/2026-08-13-WPS设置系统设计.md
+ * 见 specs/2026-08-13-02-WPS设置系统设计.md
  */
 (function (global) {
   var KEY_V2 = "gongwen.settings.v2";

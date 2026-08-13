@@ -98,14 +98,14 @@
     if (status === 429) return "请求过于频繁，请稍后再试";
     if (status === 503) return msg || "服务维护中";
     if (
-      /Failed to fetch|NetworkError|网络|ECONNREFUSED|timed out|Timeout/i.test(
+      /Failed to fetch|NetworkError|网络|ECONNREFUSED|timed out|Timeout|aborted|AbortError/i.test(
         msg
       )
     ) {
       return (
-        "连不上中转（" +
+        "中转无响应（" +
         (baseUrl() || "未配置地址") +
-        "）。请检查网络、VPN，或在登录里核对中转地址后重试。"
+        "）。未启动，或请求过久被中断——确认 127.0.0.1:3000 后重发。"
       );
     }
     return msg || "请求失败";
@@ -259,6 +259,7 @@
       if (Array.isArray(extra.items) && extra.items.length)
         body.items = extra.items;
       if (extra.count != null) body.count = extra.count;
+      if (extra.tab) body.tab = extra.tab;
     }
     return request("POST", "/api/suggest", body);
   }
