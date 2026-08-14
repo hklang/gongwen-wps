@@ -299,7 +299,9 @@
         "history",
         "doc_md",
         "assistant_reasoning",
-        "gather_only"
+        "gather_only",
+        "want_options",
+        "write_levels"
       ].forEach(function (k) {
         if (extra[k] != null) body[k] = extra[k];
       });

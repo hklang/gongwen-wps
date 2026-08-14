@@ -10,8 +10,50 @@ import os
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+_ROUND_BUF: list = []
+
+
+def _chat_round_dir() -> Path | None:
+    here = Path(__file__).resolve().parent
+    for p in [here, *here.parents]:
+        if (p / "wps-addin").is_dir():
+            d = p / "temp" / "chat_rounds"
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                return d
+            except OSError:
+                return None
+    return None
+
+
+def _log_chat_round(messages, out: dict) -> None:
+    d = _chat_round_dir()
+    if d is None:
+        return
+    rec = {
+        "t": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "sent": messages,
+        "got": {
+            "content": out.get("content") if isinstance(out, dict) else None,
+            "tool_calls": out.get("tool_calls") if isinstance(out, dict) else None,
+        },
+    }
+    try:
+        with (d / "rounds.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        _ROUND_BUF.append(rec)
+        if len(_ROUND_BUF) > 20:
+            del _ROUND_BUF[:-20]
+        (d / "latest.json").write_text(
+            json.dumps(_ROUND_BUF, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
 
 
 def _settings():
@@ -189,10 +231,8 @@ _MATERIAL_TOOL_DEFS = [
         "function": {
             "name": "fetch_context",
             "description": (
-                "按清单点名取宿主上下文正文（可多项）："
-                "pin 钉住范围；base_draft 用户已采用底稿；"
-                "task_card 任务卡；history 近轮对话；doc_full 当前完整正文。"
-                "首包仅有清单无正文；需要哪项再取。"
+                "按点名取宿主上下文：doc_full 当前完整正文。"
+                "本轮【钉住】已附原文则不必再取 pin。"
             ),
             "parameters": {
                 "type": "object",
@@ -201,13 +241,7 @@ _MATERIAL_TOOL_DEFS = [
                         "type": "array",
                         "items": {
                             "type": "string",
-                            "enum": [
-                                "pin",
-                                "base_draft",
-                                "task_card",
-                                "history",
-                                "doc_full",
-                            ],
+                            "enum": ["pin", "doc_full"],
                         },
                         "description": "要取的上下文键，可多项",
                     }
@@ -386,7 +420,7 @@ def _chat_ex(
 ) -> dict:
     prov = _provider(provider)
     if prov == "deepseek":
-        return _deepseek_complete(
+        out = _deepseek_complete(
             messages,
             temperature=temperature,
             model=model,
@@ -394,8 +428,11 @@ def _chat_ex(
             capability=capability,
             max_tokens=max_tokens,
         )
-    text = _minimax_chat(messages, temperature=temperature, model=model)
-    return {"content": text, "tool_calls": None, "reasoning_content": None}
+    else:
+        text = _minimax_chat(messages, temperature=temperature, model=model)
+        out = {"content": text, "tool_calls": None, "reasoning_content": None}
+    _log_chat_round(messages, out)
+    return out
 
 
 def _split_tool_results_for_thinking(tool_results):
@@ -1251,8 +1288,12 @@ def _infer_chat_edit(message: str, doc_md: str, workspace: dict | None = None):
     )
 
 
-def _host_forbids_local_scaffold(message: str) -> bool:
+def _host_forbids_local_scaffold(
+    message: str, want_options: bool | None = None, allow_edit: bool = False
+) -> bool:
     """WPS/宿主已声明须由模型出稿时，禁止本地【待补】骨架顶替。"""
+    if want_options or allow_edit:
+        return True
     msg = message or ""
     if "【宿主约束】" in msg or "严禁空壳" in msg:
         return True
@@ -1320,18 +1361,72 @@ def _parse_chat_edit_response(text: str) -> dict:
 
 
 _TOOL_RULES_NATIVE = (
-    "【上下文与读文件】首包只有【可用上下文清单】，无钉住/底稿/全文正文。"
-    "需要 pin / base_draft / task_card / history / doc_full 时先 fetch_context（keys 可多项）；"
-    "缺事实/数字/素材细节时，先 list_files 或 search_materials 选型，再 read_file；可多轮。"
-    "取舍由你判断：清单已够可直接最终答复；禁止编造未取到的内容；不要空转重复同一路径。"
+    "【还有什么】里未附的正文，缺则 fetch_context / list_files / read_file，够了再出稿。"
+    "fetch_context 主要取 doc_full；【钉住】已附原文则不必再 fetch pin。"
+    "禁止编造未取到的内容；不要空转重复同一路径。"
 )
 _TOOL_RULES_TEXT = (
-    "【上下文与读文件】首包仅清单；需要上下文用 fetch_context，需要素材再选型精读。"
     "需要工具时先只输出一个 JSON（不要其它文字）："
     '{"type":"tool_calls","calls":[{"name":"fetch_context|list_files|read_file|search_materials","arguments":{...}}]}'
-    "；fetch_context 需 keys 数组；list_files 无参；read_file 需 path；search_materials 需 query。"
+    "；fetch_context 需 keys 数组（doc_full，钉住已附则不必 pin）；"
+    "list_files 无参；read_file 需 path；search_materials 需 query。"
     "禁止编造未取到的内容；清单已够可直接最终答复。"
 )
+
+_LEVEL_OK = ("h1", "h2", "h3", "body")
+
+
+def _hash_rule_from_levels(levels) -> str:
+    lv = [str(x) for x in (levels or []) if str(x) in _LEVEL_OK]
+    if not lv:
+        return ""
+    bits = []
+    if "h1" in lv:
+        bits.append("一级=# 文题 + ## 一、")
+    if "h2" in lv:
+        bits.append("二级=### （一）")
+    if "h3" in lv:
+        bits.append("三级=####")
+    if "body" in lv and not ("h1" in lv or "h2" in lv or "h3" in lv):
+        bits.append("正文=不要标题井号")
+    elif "body" in lv:
+        bits.append("正文=段落")
+    if not bits:
+        return ""
+    return "井号跟点选走（本轮：" + "；".join(bits) + "）。"
+
+
+def _packet_system(
+    role: str,
+    allow_edit: bool,
+    want_options: bool,
+    hash_line: str,
+    tool_rules: str,
+) -> str:
+    head = (
+        f"你是机关{role}。本轮以【要求】为准；【钉住】是用户划定的原文，用不用、怎么用由你判断。"
+        "【钉住】已附原文则不必再 fetch pin。"
+        + tool_rules
+        + "无出处标【待核实】。禁止声称已写入。"
+    )
+    fence = "最终只输出一个 JSON 对象，禁止 markdown 代码围栏。"
+    if want_options:
+        return (
+            head
+            + fence
+            + '{"reply":"一两句","edit":null,"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"}]}'
+            "options 2～6 组；edit 必须为 null。"
+            + (hash_line or "")
+        )
+    if allow_edit:
+        return (
+            head
+            + fence
+            + '{"reply":"一两句","edit":{"md":"可落稿Markdown"}}'
+            "edit.md 必须可落稿。"
+            + (hash_line or "")
+        )
+    return head + "纯聊天：只用 reply；edit 与 options 为 null。"
 
 
 def chat(
@@ -1354,10 +1449,11 @@ def chat(
     capability: str | None = None,
     assistant_reasoning: str = "",
     gather_only: bool = False,
+    want_options: bool | None = None,
+    write_levels=None,
 ) -> dict:
     """对话：返回 {ok, reply, edit?}。edit 仅 allow_edit 时可能有，由前端确认后写盘。
-    也可返回 tool_calls（宿主本机执行后再请求）。
-    gather_only：仅取数，禁止写终稿；宿主打包后再交增强档出结论。"""
+    也可返回 tool_calls（宿主本机执行后再请求）。"""
     if _relay_cfg():
         r = _relay_request("POST", "/api/chat", {
             "message": message,
@@ -1377,7 +1473,9 @@ def chat(
             "materials": materials or [],
             "capability": capability or "",
             "assistant_reasoning": assistant_reasoning or "",
-            "gather_only": bool(gather_only),
+            "gather_only": False,
+            "want_options": bool(want_options) if want_options is not None else None,
+            "write_levels": write_levels or [],
         })
         # 中转常回「结论」散文：本机再兜底一次改名/搭架
         if allow_edit and isinstance(r, dict) and not r.get("error"):
@@ -1395,7 +1493,9 @@ def chat(
             if (
                 not has_opts
                 and not (edit and edit.get("md"))
-                and not _host_forbids_local_scaffold(message)
+                and not _host_forbids_local_scaffold(
+                    message, want_options=want_options, allow_edit=allow_edit
+                )
             ):
                 local = _infer_chat_edit(message, doc_md, workspace)
                 if local:
@@ -1416,7 +1516,13 @@ def chat(
     role = "校对顾问" if tab == "proof" else "公文写作顾问"
     allow_edit = bool(allow_edit)
     force_final = bool(force_final)
-    gather_only = bool(gather_only) and (not force_final)
+    gather_only = False
+    want_options = (
+        bool(want_options)
+        if want_options is not None
+        else _wants_options_payload(msg)
+    )
+    hash_line = _hash_rule_from_levels(write_levels)
     # 合并宿主预置精读到 materials，避免伪装 tool 轮
     native_trs, seeded_mats = _split_tool_results_for_thinking(tool_results)
     if seeded_mats:
@@ -1431,106 +1537,13 @@ def chat(
         if force_final
         else (_TOOL_RULES_NATIVE if use_native_tools else _TOOL_RULES_TEXT)
     )
-    evidence_rules = (
-        "【证据优先】用户消息含【已引用素材正文】时：必须写入素材中的具体项目名与数字；"
-        "禁止 XX/某某/空壳【待核实】顶替已有事实；仅素材确无依据处才可【待核实】。"
-        if mats_block
-        else ""
+    system = _packet_system(
+        role, allow_edit, want_options, hash_line, tool_rules
     )
-    if gather_only:
-        system = (
-            f"你是机关{role}的取数助手（本轮不写终稿）。"
-            + tool_rules
-            + "本轮只做一件事：按用户要求与【可用上下文清单】决定还要不要取材料/上下文。"
-            "若还需资料：只输出 tool_calls（fetch_context / list_files / search_materials / read_file），可多轮。"
-            "若已够生成结论：只输出一个 JSON（禁止写 options/edit/正文）："
-            '{"type":"ready","reply":"一句：资料已齐，可出稿"}'
-            "严禁输出可落稿 Markdown、options、edit；终稿由后续增强模型根据已取资料生成。"
-        )
-    elif allow_edit and _wants_options_payload(msg):
-        system = (
-            f"你是机关{role}。用户已勾选「给多份」，须由模型给出多组可落稿参考。"
-            + tool_rules
-            + evidence_rules
-            + "最终答复必须是且仅是一个 JSON 对象（禁止 markdown 代码围栏）："
-            '{"reply":"一两句说明","edit":null,'
-            '"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"},'
-            '{"id":"B","note":"…","md":"…"},{"id":"C","note":"…","md":"…"}]}'
-            "硬性规则："
-            "1) edit 必须为 null；options 至少 2 组、最多 6 组；份数由你按差异空间决定"
-            "（分歧大可多给，改动小给 2～3 即可，不必凑满；用户写明组数则从其）；"
-            "2) 严格遵守用户消息里【宿主约束】的井号层级："
-            "点选一级时：先 # 材料大标题一行，再 ## 一、二、三…；"
-            "##=一级（黑体）、###=二级（楷体加黑）、####=三级；"
-            "单个 # 只作文首大标题，禁止用单个 # 冒充章节「一、二、三」；"
-            "未点选的层级禁止出现；若宿主要求只出二级，禁止再写 ## 一级行；"
-            "对仗句式优先（前半后半都要有区分度）；"
-            "3) 严禁【待补】空壳占位模板；无依据处标【待核实】或不写数字；"
-            "4) 紧贴用户给出的「第一点/第二点…」结构与钉住范围；举例项（如「包含…」）不得压过主干意图；"
-            "4b) 本轮用户改架构/条目形态优先于历史旧表述与底稿；禁止只在 reply 空口应承「已给出」却不交 options；"
-            "4c) 必须遵守用户消息中的【本轮焦点说明】与分层标签（L1/L3-pin/L3-draft）："
-            "分层仅供参考，本轮采用哪些、忽略哪些由你判断；无关历史结论勿迁入；"
-            "intent=lead 时须统领任务卡全文框架，禁止只围着标题底稿一节写冒段；"
-            "intent=outline 时推荐焦点在当前标题/底稿，勿强行重开未点选的其它大块；"
-            "intent=body 时推荐钉住优先于结论底稿，仍由你取舍；"
-            "4d) 若有【写前对齐】：按意图/证据/风格/风险内部对齐后再写；"
-            "无精读材料禁止编造数字；勿输出长思考过程；禁止【待补】空壳；"
-            "4e) 是否精读由你判断：缺事实则先 tool；钉住/历史已够改写则可直接出 options；"
-            "5) 禁止声称已写入；reply 一两句即可。"
-        )
-    elif allow_edit and _host_forbids_local_scaffold(msg):
-        system = (
-            f"你是机关{role}。用户已授权出可落稿结论，须由模型生成。"
-            + tool_rules
-            + evidence_rules
-            + "最终答复必须是且仅是一个 JSON 对象（禁止 markdown 代码围栏）："
-            '{"reply":"简短说明","edit":{"summary":"一句话","md":"可落稿Markdown"}}'
-            "硬性规则："
-            "1) edit.md 必须是可落稿 Markdown，禁止只在 reply 描述；"
-            "2) 严禁【待补】空壳占位；无依据处标【待核实】或不写数字；"
-            "3) 紧贴用户结构与钉住范围；对仗标题前半后半都要有区分度；"
-            "3b) 遵守【本轮焦点说明】：lead=统领全文；outline=打磨当前标题；body=钉住优先参考；"
-            "分层取舍由你判断，无关历史结论勿迁入；"
-            "3c) 若有【写前对齐】：按意图/证据/风格对齐；无材料不编数；勿输出长思考；"
-            "3d) 是否精读由你判断：缺事实则先 tool；已有可改写正文可直接出 edit；"
-            "4) 禁止声称已写入；reply 一两句即可。"
-        )
-    elif allow_edit:
-        system = (
-            f"你是机关{role}。用户已授权改稿。"
-            + tool_rules
-            + evidence_rules
-            + "最终答复必须是且仅是一个 JSON 对象"
-            "（禁止输出「结论」「要点」散文，禁止 markdown 代码围栏）："
-            '{"reply":"简短说明","edit":null}'
-            " 或 "
-            '{"reply":"说明","edit":{"summary":"一句话","md":"改后完整md","rename":"可选新文件名.md"}}'
-            "硬性规则："
-            "1) 用户要求改名/改标题/加标题/改某段/删句/搭框架/列提纲/起草结构时，edit 不得为 null，必须给出完整 md；"
-            "2) 改名或改标题：即使正文为空也要改文首 # 标题，并设置 rename 为「新名.md」；不要以「无正文无法改写」拒绝；"
-            "3) 空稿搭框架：若【历史对话】已商定一级标题/框架，或用户说「只要框架/落框架/写到文件」，"
-            "**禁止再调用工具**，直接按已定标题输出 edit（## 章节 + 【待补】）；"
-            "仅当历史完全没有框架且缺材料时才可工具读取；禁止编造具体业绩数字；"
-            "3b) 用户说「落到文件/帮我写/写这部分/整篇初稿/写入到文件」并给出【段落标题】或范例段时："
-            "必须输出 edit.md（完整改后正文），禁止只在 reply 里声称已写入或假装 Keep；"
-            "4) 可参考【工作区】其它文件，但改稿默认只改【当前文件】；保留 **加黑**、<u>下划线</u> 等标记；"
-            "4b) 禁止用 &emsp;、&ensp;、全角空格或 HTML 实体做首行缩进；段落直接写正文，缩进由编辑器负责；"
-            "5) 纯询问、不要求改稿时 edit 才为 null；reply 一两句即可，禁止「结论/要点」长文。"
-        )
-    else:
-        system = (
-            f"你是机关{role}。用户会附上「全文」和可选「选中片段」。"
-            + tool_rules
-            + "最终可用纯文本，或 JSON "
-            '{"type":"final","reply":"…"}。'
-            "硬性规则（铁律）："
-            "0) 用户未授权改稿：禁止输出 edit、禁止输出整篇替换稿、禁止声称已写入/已改稿/请 Keep；"
-            "只回答问题与建议，改稿须用户先选「授权改稿」。"
-            "1) 只根据提供的原文/工具结果判断与回答，禁止臆造未给出的通知或章节内容；"
-            "2) 问到「与（二）是否重复」等时，必须用全文里真实的（二）对照；全文没有则明确说「原文未提供，无法判断」；"
-            "3) 先给简短结论，再列最多 2～3 条要点；不要长篇分章、不要大表格，除非用户要求展开；"
-            "4) 未要求改稿时不要输出整段替换稿；不要输出多套方案 JSON；"
-            "5) 用户指出你说错了，应承认并仅依据原文重答。"
+    if mats_block:
+        system += (
+            "用户消息含【已引用素材正文】时：必须写入素材中的具体项目名与数字；"
+            "禁止用 XX/某某顶替已有事实。"
         )
     messages = [{"role": "system", "content": system}]
     for turn in (history or [])[-12:]:
@@ -1542,60 +1555,10 @@ def chat(
             messages.append({"role": role_name, "content": content})
 
     doc = (doc_md or "").strip()
-    ctx = (context_md or "").strip()
     parts = []
     mem = (project_memory or "").strip()
     if mem:
         parts.append("【工程记忆】\n" + mem[:1500])
-    summ = (session_summary or "").strip()
-    if summ:
-        parts.append("【会话摘要】\n" + summ[:2000])
-    if isinstance(read_set, list) and read_set:
-        parts.append("【本会话已读】\n" + "、".join(str(x) for x in read_set[:20]))
-    if isinstance(workspace, dict) and workspace:
-        ws_lines = [
-            f"名称：{workspace.get('name') or ''}",
-            f"当前文件：{workspace.get('current') or ''}",
-            f"当前标题：{workspace.get('currentTitle') or ''}",
-        ]
-        catalog = workspace.get("catalog") or []
-        if isinstance(catalog, list) and catalog:
-            ws_lines.append("工程目录（文稿/素材/版本）：")
-            for it in catalog[:40]:
-                if isinstance(it, dict):
-                    ws_lines.append(
-                        f"- {it.get('path') or ''}（{it.get('title') or ''}，{it.get('bytes') or 0}字节）"
-                    )
-        files = workspace.get("files") or []
-        if isinstance(files, list) and files and not catalog:
-            ws_lines.append("区内 md：")
-            for it in files[:15]:
-                if isinstance(it, dict):
-                    ws_lines.append(
-                        f"- {it.get('path') or ''}（{it.get('title') or ''}，{it.get('bytes') or 0}字节）"
-                    )
-        mats = workspace.get("materials") or []
-        has_read = False
-        if isinstance(tool_results, list):
-            for tr in tool_results:
-                if (
-                    isinstance(tr, dict)
-                    and tr.get("name") == "read_file"
-                    and isinstance(tr.get("result"), dict)
-                    and tr["result"].get("ok")
-                    and (tr["result"].get("content") or tr["result"].get("text"))
-                ):
-                    has_read = True
-                    break
-        if isinstance(mats, list) and mats and not has_read:
-            ws_lines.append("素材摘录：")
-            for it in mats[:5]:
-                if not isinstance(it, dict):
-                    continue
-                ws_lines.append(f"--- {it.get('path') or it.get('title') or ''} ---")
-                ws_lines.append(str(it.get("snippet") or "")[:800])
-        parts.append("【工作区】\n" + "\n".join(ws_lines))
-    # 原生 tools：tool_results 走 role=tool；文本协议：仍写入 user 块（回退）
     tool_msgs = (
         _messages_from_tool_results(tool_results, assistant_reasoning, think_on)
         if use_native_tools
@@ -1603,57 +1566,21 @@ def chat(
     )
     if (not use_native_tools) and isinstance(tool_results, list) and tool_results:
         parts.append("【工具结果】\n" + json.dumps(tool_results, ensure_ascii=False)[:24000])
-    # 双保险：即使用原生 tool 消息，也把精读正文摊进 user，避免模型「看不见」
     if mats_block:
         parts.append(mats_block)
-    elif use_native_tools and isinstance(tool_results, list) and tool_results:
-        flat: list[str] = []
-        for tr in tool_results:
-            if not isinstance(tr, dict) or tr.get("name") != "read_file":
-                continue
-            res = tr.get("result") if isinstance(tr.get("result"), dict) else {}
-            if not res.get("ok"):
-                continue
-            text = str(res.get("text") or res.get("content") or "").strip()
-            if not text:
-                continue
-            path = str(res.get("path") or "").strip() or "素材"
-            if len(text) > 12000:
-                text = text[:12000] + "\n…（已截断）"
-            flat.append(f"### 引用素材：{path}\n{text}")
-            if len(flat) >= 4:
-                break
-        if flat:
-            parts.append(
-                "【已引用素材正文——写稿必须优先采用其中事实与数据；"
-                "禁止用 XX/某某/【待核实】顶替素材已有内容】\n"
-                + "\n\n".join(flat)
-            )
-    if doc:
-        parts.append("【当前文件全文 md】\n" + doc[:12000])
-    if ctx:
-        parts.append("【当前选中】\n" + ctx[:4000])
-    if not doc and not ctx and not (isinstance(workspace, dict) and workspace):
-        parts.append("【原文】（未提供任何正文，请提醒用户先打开/选中内容，不要猜测文稿内容）")
-    elif _doc_is_sparse(doc) and allow_edit:
-        parts.append(
-            "【说明】当前文件几乎为空：改名须输出 edit（# 标题+rename）；"
-            "搭框架前若缺通知内容须先调用读文件工具；"
-            "禁止以无正文拒绝。"
-        )
-    parts.append("【用户问题】\n" + msg)
+    parts.append(msg)
     messages.append({"role": "user", "content": "\n\n".join(parts)})
     if tool_msgs:
         messages.extend(tool_msgs)
     tools = _MATERIAL_TOOL_DEFS if use_native_tools else None
     out = _chat_ex(
         messages,
-        temperature=0.2 if gather_only else (0.5 if think_on else 0.3),
+        temperature=0.5 if think_on else 0.3,
         provider=provider,
         model=model,
         tools=tools,
         capability=capability,
-        max_tokens=2048 if gather_only else None,
+        max_tokens=None,
     )
     native_calls = out.get("tool_calls")
     raw = str(out.get("content") or "")
@@ -1678,12 +1605,12 @@ def chat(
             "reasoning_content": reasoning,
             "provider": _provider(provider),
         }
-    if allow_edit and (not gather_only):
+    if allow_edit:
         parsed = _parse_chat_edit_response(raw)
         options = parsed.get("options")
         edit = parsed.get("edit")
         # 给多份却只回散文：强提示重试 1 次（仍禁止本地骨架顶替）
-        if _wants_options_payload(msg) and not options:
+        if want_options and not options:
             retry_msgs = list(messages) + [
                 {"role": "assistant", "content": (raw or "")[:8000]},
                 {
@@ -1719,7 +1646,9 @@ def chat(
         if (
             not options
             and not (edit and edit.get("md"))
-            and not _host_forbids_local_scaffold(msg)
+            and not _host_forbids_local_scaffold(
+                msg, want_options=want_options, allow_edit=allow_edit
+            )
         ):
             edit = _infer_chat_edit(msg, doc, workspace)
         reply = parsed["reply"]

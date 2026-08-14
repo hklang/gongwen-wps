@@ -14,6 +14,8 @@
   var VERSION_DIR = "版本";
   var VERSION_BOOKMARK = "书签";
   var VERSION_AUTO = "自动";
+  var VERSION_AUTO_WRITE = "撰写";
+  var VERSION_AUTO_SUITE = "精修";
   var AUTO_VERSION_KEEP = 10;
   var META_DIR = ".gongwen";
   var LIST_RE = /\.docx?$/i;
@@ -390,6 +392,13 @@
         if (fsMkdir(p) && fsExists(p)) created.push(VERSION_DIR + "/" + sub);
         else missing.push(VERSION_DIR + "/" + sub);
       });
+      [VERSION_AUTO_WRITE, VERSION_AUTO_SUITE].forEach(function (sub) {
+        var p = joinRoot(r, VERSION_DIR + "\\" + VERSION_AUTO + "\\" + sub);
+        if (fsExists(p)) return;
+        if (fsMkdir(p) && fsExists(p))
+          created.push(VERSION_DIR + "/" + VERSION_AUTO + "/" + sub);
+        else missing.push(VERSION_DIR + "/" + VERSION_AUTO + "/" + sub);
+      });
       try {
         var meta = joinRoot(r, META_DIR + "\\wps.json");
         if (!fsExists(meta)) {
@@ -663,10 +672,20 @@
     });
     var autos = sortAutoNewest(
       listFilesInFolder(
-        joinRoot(root, VERSION_DIR + "\\" + VERSION_AUTO),
-        VERSION_DIR + "/" + VERSION_AUTO,
+        joinRoot(root, VERSION_DIR + "\\" + VERSION_AUTO + "\\" + VERSION_AUTO_WRITE),
+        VERSION_DIR + "/" + VERSION_AUTO + "/" + VERSION_AUTO_WRITE,
         200,
         LIST_RE
+      ).concat(
+        listFilesInFolder(
+          joinRoot(
+            root,
+            VERSION_DIR + "\\" + VERSION_AUTO + "\\" + VERSION_AUTO_SUITE
+          ),
+          VERSION_DIR + "/" + VERSION_AUTO + "/" + VERSION_AUTO_SUITE,
+          200,
+          LIST_RE
+        )
       )
     );
     autos.forEach(function (it) {
@@ -1193,15 +1212,32 @@
     return { ok: false, error: errs.join(" | ") || "无可用 Save 方法" };
   }
 
+  function autoKindName(kind) {
+    return kind === "suite" ? VERSION_AUTO_SUITE : VERSION_AUTO_WRITE;
+  }
+
+  function autoLaneRel(kind) {
+    return VERSION_DIR + "/" + VERSION_AUTO + "/" + autoKindName(kind);
+  }
+
+  function autoKindFromRel(rel) {
+    var n = normRel(rel);
+    var suitePrefix =
+      VERSION_DIR + "/" + VERSION_AUTO + "/" + VERSION_AUTO_SUITE + "/";
+    return n.indexOf(suitePrefix) === 0 ? "suite" : "write";
+  }
+
   /**
-   * 存版本到指定轨：书签=用户手动；自动=AI落稿。
+   * 存版本到指定轨：书签=用户手动；自动=AI落稿（撰写/精修分夹）。
    * 优先磁盘复制，其次 SaveCopyAs / SaveAs2。
    */
-  function saveToVersionLane(lane) {
+  function saveToVersionLane(lane, kind) {
     var steps = [];
     try {
-      var sub = lane === "auto" ? VERSION_AUTO : VERSION_BOOKMARK;
-      var laneRel = VERSION_DIR + "/" + sub;
+      var laneRel =
+        lane === "auto"
+          ? autoLaneRel(kind)
+          : VERSION_DIR + "/" + VERSION_BOOKMARK;
       var resolved = resolveRoot();
       var root = resolved.root;
       if (!root) {
@@ -1216,7 +1252,7 @@
       steps.push("root=" + root);
       steps.push("lane=" + laneRel);
 
-      var verDir = joinRoot(root, VERSION_DIR + "\\" + sub);
+      var verDir = joinRoot(root, laneRel.replace(/\//g, "\\"));
       if (!fsExists(verDir) && !fsMkdir(verDir)) {
         return { ok: false, error: "无法创建版本目录：\n" + verDir };
       }
@@ -1316,7 +1352,7 @@
 
       var result = { ok: true, path: rel, abs: abs, via: via, lane: laneRel };
       if (lane === "auto") {
-        result.pruned = pruneAutoVersions(root, rel);
+        result.pruned = pruneAutoVersions(root, rel, kind);
       }
       return result;
     } catch (e) {
@@ -1336,21 +1372,18 @@
     return saveBookmarkVersion();
   }
 
-  function saveAutoVersion() {
-    return saveToVersionLane("auto");
+  function saveAutoVersion(kind) {
+    return saveToVersionLane("auto", kind === "suite" ? "suite" : "write");
   }
 
-  /** 自动轨只保留最近 AUTO_VERSION_KEEP 份，按文件名时间戳删旧；刚写入的 keepRel 永不删 */
-  function pruneAutoVersions(root, keepRel) {
-    var dir = joinRoot(root, VERSION_DIR + "\\" + VERSION_AUTO);
+  /** 自动轨按撰写/精修分夹，各留最近 AUTO_VERSION_KEEP 份 */
+  function pruneAutoVersions(root, keepRel, kind) {
+    var k = kind || autoKindFromRel(keepRel);
+    var relPrefix = autoLaneRel(k);
+    var dir = joinRoot(root, relPrefix.replace(/\//g, "\\"));
     if (!fsExists(dir)) return { removed: 0 };
     var files = sortAutoNewest(
-      listFilesInFolder(
-        dir,
-        VERSION_DIR + "/" + VERSION_AUTO,
-        0,
-        LIST_RE
-      )
+      listFilesInFolder(dir, relPrefix, 0, LIST_RE)
     );
     var keep = normRel(keepRel || "");
     var removed = 0;
@@ -1365,6 +1398,25 @@
       removed: removed,
       kept: Math.min(files.length, AUTO_VERSION_KEEP)
     };
+  }
+
+  /** 清空某一自动夹（撰写或精修）；不改正文、不动书签 */
+  function clearAutoLane(kind) {
+    var resolved = resolveRoot();
+    var root = resolved.root;
+    if (!root) return { ok: false, error: "无工程根" };
+    var k = kind === "suite" ? "suite" : "write";
+    var relPrefix = autoLaneRel(k);
+    var dir = joinRoot(root, relPrefix.replace(/\//g, "\\"));
+    if (!fsExists(dir)) return { ok: true, removed: 0 };
+    var files = listFilesInFolder(dir, relPrefix, 0, LIST_RE);
+    var removed = 0;
+    var i;
+    for (i = 0; i < files.length; i++) {
+      var del = deleteRel(files[i].path);
+      if (del && del.ok) removed++;
+    }
+    return { ok: true, removed: removed };
   }
 
   /** 恢复某版本覆盖当前活动稿。文件还在即可还。 */
@@ -1399,7 +1451,7 @@
       }
 
       // 先备份当前稿到自动轨
-      var backup = saveAutoVersion();
+      var backup = saveAutoVersion(autoKindFromRel(rel));
       if (!backup.ok) {
         return {
           ok: false,
@@ -1549,6 +1601,7 @@
     saveActiveToVersion: saveActiveToVersion,
     saveBookmarkVersion: saveBookmarkVersion,
     saveAutoVersion: saveAutoVersion,
+    clearAutoLane: clearAutoLane,
     restoreVersionToActive: restoreVersionToActive,
     AUTO_VERSION_KEEP: AUTO_VERSION_KEEP,
     addCite: addCite,

@@ -61,7 +61,38 @@
   }
 
   /**
-   * 写回选区：先整段删光选定范围，再写入新内容（不残留原文）。
+   * 划选 / 清空 / 写回的共用边界：只含正文，不含首尾段标。
+   * 段标一进范围，邻段就会粘连、排版被带走——与按钮、是否钉住无关。
+   */
+  function shrinkToContentRange(start, end) {
+    var d = doc();
+    var raw = "";
+    try {
+      raw = String(d.Range(start, end).Text == null ? "" : d.Range(start, end).Text);
+    } catch (e0) {
+      return { start: start, end: end, raw: "" };
+    }
+    while (end > start && raw.charAt(0) === "\r") {
+      start += 1;
+      try {
+        raw = String(d.Range(start, end).Text == null ? "" : d.Range(start, end).Text);
+      } catch (e1) {
+        break;
+      }
+    }
+    while (end > start && raw.charAt(raw.length - 1) === "\r") {
+      end -= 1;
+      try {
+        raw = String(d.Range(start, end).Text == null ? "" : d.Range(start, end).Text);
+      } catch (e2) {
+        break;
+      }
+    }
+    return { start: start, end: end, raw: raw };
+  }
+
+  /**
+   * 写回选区：先清空选定正文（保留段末回车），再写入新内容。
    * 含 Markdown / 多段时按公文行排版写入。
    */
   function replaceSelection(text, opts) {
@@ -73,14 +104,21 @@
       start = s.Start;
       end = s.End;
     } catch (ePos) {}
-    var raw = String(s.Text == null ? "" : s.Text);
+    var shrunk = shrinkToContentRange(start, end);
+    start = shrunk.start;
+    end = shrunk.end;
+    var raw = shrunk.raw;
     var cur = cleanText(raw);
     if (end <= start || !cur.replace(/\s/g, "")) {
       throw new Error("请先划选要改的正文");
     }
     var src = String(text == null ? "" : text);
 
-    /* 整段清空：用 Range.Text=''，避免 Delete 后残留 */
+    try {
+      selectRange(start, end);
+    } catch (eSel) {}
+
+    /* 只清正文，不动段标；用 Range.Text=''，避免 Delete 后残留 */
     try {
       doc().Range(start, end).Text = "";
     } catch (eWipe) {
@@ -124,19 +162,18 @@
       if (hj.via && hj.lvl <= h0.lvl) break;
       endIdx = j;
     }
-    var a = paras.Item(startIdx).Range.Start;
-    var b = paras.Item(endIdx).Range.End;
-    try {
-      if (b > a + 1) b = b - 1;
-    } catch (e) {}
-    selectRange(a, b);
+    var c = shrinkToContentRange(
+      paras.Item(startIdx).Range.Start,
+      paras.Item(endIdx).Range.End
+    );
+    selectRange(c.start, c.end);
     return {
       heading: h0,
       from: startIdx,
       to: endIdx,
       text: getSelectionText(),
-      start: a,
-      end: b,
+      start: c.start,
+      end: c.end,
       endsWithPara: true,
       info: getSelectionInfo()
     };
@@ -151,25 +188,25 @@
     if (typeof start !== "number" || typeof end !== "number" || end <= start) {
       throw new Error("选区锚点已失效，请重新钉住后再试");
     }
-    var d = doc();
-    var rng = d.Range(start, end);
-    var raw = String(rng.Text == null ? "" : rng.Text);
+    var shrunk = shrinkToContentRange(start, end);
+    start = shrunk.start;
+    end = shrunk.end;
+    var raw = shrunk.raw;
     var cur = cleanText(raw);
-    if (!cur.replace(/\s/g, "") && !opts.allowEmpty) {
+    if (end <= start || (!cur.replace(/\s/g, "") && !opts.allowEmpty)) {
       throw new Error("选区锚点已失效，请重新钉住后再试");
     }
-    var endedWithPara =
-      opts.endsWithPara != null
-        ? !!opts.endsWithPara
-        : /\r$/.test(raw) || /\n$/.test(cur);
-    var out = toWordText(text, endedWithPara);
+    var d = doc();
+    /* 段标留在范围外，写回不再补末尾回车（补了会多空段，不补也不粘连） */
+    var out = toWordText(text, false);
+    var rng = d.Range(start, end);
     rng.Text = out;
     var ns = rng.Start;
     var ne = rng.End;
     try {
       selectRange(ns, ne);
     } catch (eSel) {}
-    return { start: ns, end: ne, text: cleanText(out), endsWithPara: endedWithPara };
+    return { start: ns, end: ne, text: cleanText(out), endsWithPara: false };
   }
 
   function getDocumentText() {
@@ -205,9 +242,19 @@
     var r = para.Range;
     var a = r.Start;
     var b = r.End;
+    var t = "";
     try {
-      if (b > a) b = b - 1;
-    } catch (e) {}
+      t = String(doc().Range(a, b).Text == null ? "" : doc().Range(a, b).Text);
+    } catch (e0) {}
+    /* 段标不能进 Font 范围，否则下一段排版被带走 */
+    while (b > a && (t.charAt(t.length - 1) === "\r" || t.charAt(t.length - 1) === "\n")) {
+      b -= 1;
+      try {
+        t = String(doc().Range(a, b).Text == null ? "" : doc().Range(a, b).Text);
+      } catch (e1) {
+        break;
+      }
+    }
     return doc().Range(a, b);
   }
 
@@ -257,26 +304,23 @@
       pf.Alignment = spec.align;
     } catch (eAl) {}
     try {
-      setRunFont(
-        paraContentRange(para).Font,
-        spec.font,
-        spec.size,
-        !!spec.bold
-      );
+      var cr = paraContentRange(para);
+      if (cr.Start >= cr.End) return;
+      setRunFont(cr.Font, spec.font, spec.size, !!spec.bold);
     } catch (eF) {}
   }
 
   function applyPrefixBold(para, prefixLen) {
     if (!prefixLen || prefixLen < 1) return;
     try {
-      var r = para.Range;
-      var a = r.Start;
-      var boldRng = doc().Range(a, a + prefixLen);
-      boldRng.Font.Bold = 1;
-      var restEnd = r.End > a + prefixLen ? r.End - 1 : a + prefixLen;
-      if (restEnd > a + prefixLen) {
-        doc().Range(a + prefixLen, restEnd).Font.Bold = 0;
-      }
+      var cr = paraContentRange(para);
+      var a = cr.Start;
+      var b = cr.End;
+      if (b <= a) return;
+      var mid = a + prefixLen;
+      if (mid > b) mid = b;
+      doc().Range(a, mid).Font.Bold = 1;
+      if (b > mid) doc().Range(mid, b).Font.Bold = 0;
     } catch (e) {}
   }
 
@@ -592,6 +636,11 @@
    * 文档级页边距/页码：缺则无感补一次。
    */
   function insertAtCursor(text) {
+    var s = selection();
+    try {
+      var ip = s.Start;
+      s.SetRange(ip, ip);
+    } catch (eCol) {}
     ensureGongwenDocChrome();
     typeLinesStyled(splitWriteLines(text));
     return true;
@@ -701,12 +750,8 @@
 
   /** 仅 SetRange，不改高亮/格式（选中态只在侧栏展示） */
   function highlightRange(start, end) {
-    var a = start;
-    var b = end;
-    try {
-      if (b > a + 1) b = b - 1;
-    } catch (e) {}
-    selectRange(a, b);
+    var c = shrinkToContentRange(start, end);
+    selectRange(c.start, c.end);
   }
 
   function clearPaint() {
@@ -714,12 +759,7 @@
   }
 
   function paraSelectBounds(p) {
-    var a = p.Range.Start;
-    var b = p.Range.End;
-    try {
-      if (b > a + 1) b = b - 1;
-    } catch (e) {}
-    return { start: a, end: b };
+    return shrinkToContentRange(p.Range.Start, p.Range.End);
   }
 
   /**
@@ -835,19 +875,18 @@
       endIdx = j;
     }
     if (endIdx === startIdx) throw new Error("该标题下没有正文段");
-    var a = paras.Item(startIdx + 1).Range.Start;
-    var b = paras.Item(endIdx).Range.End;
-    try {
-      if (b > a + 1) b = b - 1;
-    } catch (e) {}
-    selectRange(a, b);
+    var c = shrinkToContentRange(
+      paras.Item(startIdx + 1).Range.Start,
+      paras.Item(endIdx).Range.End
+    );
+    selectRange(c.start, c.end);
     return {
       heading: h0,
       from: startIdx + 1,
       to: endIdx,
       text: getSelectionText(),
-      start: a,
-      end: b,
+      start: c.start,
+      end: c.end,
       endsWithPara: true,
       info: getSelectionInfo()
     };
@@ -875,18 +914,14 @@
       endIdx = j;
     }
     if (endIdx > startIdx) {
-      var a = paras.Item(startIdx + 1).Range.Start;
-      var b = paras.Item(endIdx).Range.End;
-      try {
-        if (b > a + 1) b = b - 1;
-      } catch (e) {}
-      selectRange(a, b);
-      return replaceSelection(text, { endsWithPara: true });
+      var c = shrinkToContentRange(
+        paras.Item(startIdx + 1).Range.Start,
+        paras.Item(endIdx).Range.End
+      );
+      selectRange(c.start, c.end);
+      return replaceSelection(text);
     }
     var ins = paras.Item(startIdx).Range.End;
-    try {
-      if (ins > paras.Item(startIdx).Range.Start) ins = ins - 1;
-    } catch (e2) {}
     selectRange(ins, ins);
     try {
       s.TypeParagraph();
@@ -985,10 +1020,7 @@
         throw new Error("标题锚点已失效，请重新扩选钉住");
       }
       var bounds = paraSelectBounds(paras.Item(idx));
-      /* 只换行内文字，段末标记留给原段落 */
-      replaceRange(bounds.start, bounds.end, pairs[k].text, {
-        endsWithPara: false
-      });
+      replaceRange(bounds.start, bounds.end, pairs[k].text);
     }
     var first = paraSelectBounds(paras.Item(list[0]));
     var last = paraSelectBounds(paras.Item(list[list.length - 1]));

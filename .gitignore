@@ -8,6 +8,8 @@ var/**/.env
 var/**/node_modules/
 var/**/logs/
 
+temp/
+
 # local secrets / state
 **/settings.py
 !**/settings.example.py

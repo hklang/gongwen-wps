@@ -38,7 +38,7 @@
     if (!list.length) {
       return {
         ok: false,
-        error: "缺少 keys（pin|base_draft|task_card|history|doc_full）"
+        error: "缺少 keys（pin|doc_full）"
       };
     }
     var bag = _contextBag || {};

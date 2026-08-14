@@ -165,28 +165,7 @@
     if (risks[0]) tipParts.push(risks[0]);
     var tipLine = tipParts.join(" · ").slice(0, 110);
 
-    var promptBlock =
-      "\n【写前对齐】（商用质量门·须遵守）\n" +
-      "- 意图：" +
-      intent +
-      "（须与【本轮焦点说明】一致；焦点跟本轮意图走）\n" +
-      "- 证据：" +
-      evidence +
-      (readN || matN
-        ? "；有材料须据实，关键数字/事实能指回材料，无出处标【待核实】"
-        : "；无精读/引用时禁止编造数字、单位与具体政绩结论，宁可少写") +
-      "\n" +
-      "- 风格：" +
-      style +
-      (fp
-        ? "；贴近参照口气与结构习惯，禁止整段照抄"
-        : "；未选参照则写得体公文，勿冒充某单位专属口气或硬编专名") +
-      "\n" +
-      (risks.length ? "- 风险：" + risks.join("；") + "\n" : "") +
-      "- 纪律：内部对齐后再出稿；禁止输出长思考过程；质量优先于套话空壳；" +
-      "对仗要有区分度；禁止【待补】占位；立意取舍服务于本轮用户任务。\n";
-
-    promptBlock += renderStyleBlock(fp);
+    var promptBlock = "";
 
     return {
       intent: intent,
@@ -338,12 +317,6 @@
         checklist[4].ok = false;
       }
     }
-    if (opts.intent === "lead" && opts.hasTaskCard === false) {
-      add("立意", "任务框架薄，冒段易空泛");
-    }
-    if (opts.intent === "lead" && text.replace(/\s/g, "").length < 60) {
-      add("立意", "冒段过短，统领感不足");
-    }
 
     var failed = checklist.filter(function (c) {
       return !c.ok;
@@ -379,9 +352,7 @@
       "只输出一个 JSON 对象：{\"pass\":true|false,\"issues\":[{\"dim\":\"立意|结构|口气|据实|口径\",\"msg\":\"不超过40字\"}]}\n" +
       "硬规则：稿中出现具体百分比/万元/亿元等数字，若上下文未给出材料依据，必须至少一条 dim=据实；" +
       "有【待补】必须报；整段照抄参照必须报。issues 最多 5 条；真正无问题才 pass=true。\n" +
-      "本轮意图：" +
-      (opts.intent || "") +
-      "\n检查单：\n" +
+      "检查单：\n" +
       list +
       "\n\n【待检稿】\n" +
       String(md || "").slice(0, 6000)

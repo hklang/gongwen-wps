@@ -28,6 +28,7 @@ _CHAT_ALLOW_KEYS = frozenset({
     "project_memory", "force_final", "capability",
     "category_code", "category", "template_path",
     "materials", "assistant_reasoning", "gather_only",
+    "want_options", "write_levels",
 })
 
 logging.basicConfig(
@@ -752,7 +753,9 @@ class Handler(BaseHTTPRequestHandler):
                         materials=safe.get("materials"),
                         capability=cap,
                         assistant_reasoning=safe.get("assistant_reasoning") or "",
-                        gather_only=bool(safe.get("gather_only")),
+                        gather_only=False,
+                        want_options=safe.get("want_options"),
+                        write_levels=safe.get("write_levels") if isinstance(safe.get("write_levels"), list) else [],
                     )
                     if isinstance(r, dict):
                         r.pop("model", None)

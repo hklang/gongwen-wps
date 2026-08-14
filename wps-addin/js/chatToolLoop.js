@@ -17,36 +17,14 @@
     return t;
   }
 
-  function slimWorkspace(ws, readSet) {
+  function slimWorkspace(ws) {
     if (!ws) return {};
-    var readMap = {};
-    (readSet || []).forEach(function (p) {
-      readMap[p] = true;
-    });
     return {
       name: ws.name || "",
       root: ws.root || "",
-      catalog: (ws.catalog || []).slice(0, 40),
-      /* 已精读的不再塞摘要，省窗 */
-      materials: (ws.materials || [])
-        .filter(function (m) {
-          return !readMap[m.path];
-        })
-        .slice(0, 20)
-        .map(function (m) {
-          return {
-            path: m.path,
-            title: m.title,
-            summary: String(m.summary || "").slice(0, 400)
-          };
-        }),
-      templates: (ws.templates || []).slice(0, 15).map(function (m) {
-        return {
-          path: m.path,
-          title: m.title,
-          summary: String(m.summary || "").slice(0, 280)
-        };
-      })
+      catalog: [],
+      materials: [],
+      files: []
     };
   }
 
@@ -79,6 +57,8 @@
     var contextBag = opts.contextBag && typeof opts.contextBag === "object"
       ? opts.contextBag
       : null;
+    var wantOptions = !!opts.want_options;
+    var writeLevels = Array.isArray(opts.write_levels) ? opts.write_levels : [];
     var onStatus = typeof opts.onStatus === "function" ? opts.onStatus : function () {};
 
     if (!message) {
@@ -92,10 +72,7 @@
       GwMaterialTools.setContextBag(
         contextBag || {
           pin: contextMd,
-          doc_full: docMd,
-          history: history,
-          base_draft: "",
-          task_card: ""
+          doc_full: docMd
         }
       );
     }
@@ -267,8 +244,7 @@
     function oneRound(forceFinal, round, cap, gatherOnly) {
       var useCap = cap || talkCap;
       var ws = slimWorkspace(
-        GwMaterialIndex ? GwMaterialIndex.workspaceForAi() : {},
-        state.readSet
+        GwMaterialIndex ? GwMaterialIndex.workspaceForAi() : {}
       );
       var mats = relayMaterials();
       status(
@@ -300,7 +276,9 @@
           history: history,
           session_summary: sessionSummary,
           doc_md: "",
-          assistant_reasoning: state.lastReasoning || ""
+          assistant_reasoning: state.lastReasoning || "",
+          want_options: wantOptions,
+          write_levels: writeLevels
         }
       ).then(function (json) {
         if (json && json.reasoning_content) {
@@ -382,49 +360,9 @@
       })
       .then(function () {
         var round = 0;
-        var needProFinal = allowEdit && finalCap === "strong";
-
-        function finalizeWrite() {
-          /* flash 取数结果已在 tool_results；不回灌 flash reasoning 给 pro */
-          state.lastReasoning = "";
-          var n = (state.toolResults && state.toolResults.length) || 0;
-          status(
-            n
-              ? "①材料已齐（" + n + " 条）→ ②增强出终稿（质量优先，可能需1～3分钟）"
-              : "①无需再取数 → ②增强出终稿（质量优先，可能需1～3分钟）",
-            state
-          );
-          return oneRound(true, round, finalCap, false).then(packResult);
-        }
-
-        function hasMaterialPool() {
-          if ((citeMats || []).length) return true;
-          try {
-            if (!global.GwMaterialIndex || !GwMaterialIndex.workspaceForAi)
-              return false;
-            var ws = GwMaterialIndex.workspaceForAi() || {};
-            return !!(ws.catalog && ws.catalog.length);
-          } catch (e) {
-            return false;
-          }
-        }
-
-        function gatherLoop() {
-          return oneRound(false, round, talkCap, true).then(function (r) {
-            if (r.done) {
-              return finalizeWrite();
-            }
-            var ex = executeCalls(r.calls || []);
-            round += 1;
-            if (ex.dupOnly || round >= MAX_ROUNDS) {
-              return finalizeWrite();
-            }
-            return gatherLoop();
-          });
-        }
 
         function chatLoop(force) {
-          return oneRound(force, round, talkCap, false).then(function (r) {
+          return oneRound(force, round, allowEdit ? finalCap : talkCap, false).then(function (r) {
             if (r.done) return packResult(r);
             var ex = executeCalls(r.calls || []);
             round += 1;
@@ -435,14 +373,6 @@
           });
         }
 
-        /* 出稿：有素材池才 flash 取数；否则钉住已在首包，直接 pro 终稿 */
-        if (needProFinal) {
-          if (!hasMaterialPool()) {
-            status("工程无素材待取 → 直接增强出终稿", state);
-            return finalizeWrite();
-          }
-          return gatherLoop();
-        }
         return chatLoop(false);
       });
   }

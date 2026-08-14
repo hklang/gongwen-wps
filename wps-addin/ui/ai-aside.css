@@ -696,7 +696,8 @@ html,body{height:100%;margin:0;overflow:hidden;background:#f7f8fa;}
   padding-bottom: 8px;
   border-bottom: 1px solid #e7e5e4;
 }
-#aiAside .ai-opt.suite-hist {
+#aiAside .ai-opt.suite-hist,
+#aiAside .ai-variant.write-hist {
   margin-top: 8px;
   opacity: 0.92;
   border-style: dashed;

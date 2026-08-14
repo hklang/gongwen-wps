@@ -43,26 +43,9 @@
     card.updatedAt = Date.now();
   }
 
-  /** 用户消息写入任务卡（M1：rawPins + 粗提） */
+  /** 不再用正则抽任务卡；历史原话走 fetch_context(history) */
   function ingestUserMessage(card, text) {
-    card = ensureCard(card);
-    var t = String(text || "").trim();
-    if (!t) return card;
-    if (TASK_PIN_RE.test(t)) pushUniquePin(card, t);
-    if (/对仗|，{2,}|句式/.test(t)) {
-      card.style.parallel = true;
-      if (/对仗|句式/.test(t)) card.style.notes = t.slice(0, 200);
-    }
-    if (/不要|别用|改成|换成/.test(t) && t.length < 400) {
-      card.corrections.push({ at: Date.now(), text: t.slice(0, 400) });
-      while (card.corrections.length > 5) card.corrections.shift();
-      card.updatedAt = Date.now();
-    }
-    var m = t.match(/分管[^。\n]{2,80}/);
-    if (m) card.scope = m[0].slice(0, 120);
-    var n = t.match(/(\d{3,4})\s*字/);
-    if (n) card.lengthLimit = n[1] + "字以内";
-    return card;
+    return ensureCard(card);
   }
 
   function cardHasContent(card) {
@@ -129,138 +112,14 @@
     return out;
   }
 
-  /**
-   * @returns {{intent,confidence,focusLine,clarifyOptions,soft}}
-   */
+  /** 宿主不再猜 intent；写什么由本轮用户原文决定 */
   function classify(opts) {
     opts = opts || {};
-    var msg = String(opts.message || "");
-    var levels = opts.levels || [];
-    var allow = !!opts.allowEdit;
-    var hasCard = !!opts.hasTaskCard;
-    var hasBase = !!opts.hasBaseDraft;
-    var forced = opts.forcedIntent || "";
-    if (forced) {
-      return packIntent(forced, 0.95, false);
-    }
-    if (!allow) return packIntent("chat", 0.9, false);
-
-    var scores = {
-      lead: 0,
-      outline: 0,
-      revise_outline: 0,
-      body: 0,
-      ambiguous: 0
-    };
-    if (/冒段|开篇|开头|文章开头|总起|导语/.test(msg)) scores.lead += 3;
-    if (/改成|不要.+要|换成|换架构|：\s*\S+.+：\s*\S+/.test(msg))
-      scores.revise_outline += 3;
-    if (/这组标题|再对仗|打磨标题|只改标题|二级再|三级再/.test(msg))
-      scores.outline += 2.5;
-    if (/充填|本节正文|写这段|段落|完成这段|先完成|继续写|写正文|扩写|充实/.test(msg))
-      scores.body += 3;
-    if (/（[一二三四五六七八九十\d]+）/.test(msg) && msg.length > 20)
-      scores.body += 2;
-    if (levels.indexOf("body") >= 0) scores.body += 2;
-    if (levels.indexOf("body") >= 0 && levels.length === 1) scores.body += 1;
-    if (
-      (levels.indexOf("h1") >= 0 ||
-        levels.indexOf("h2") >= 0 ||
-        levels.indexOf("h3") >= 0) &&
-      scores.lead < 2 &&
-      scores.body < 2
-    ) {
-      scores.outline += 1.5;
-    }
-    if (!msg.replace(/\s/g, "") && allow) scores.outline += 1;
-    /* 极短且无明确写作信号时才抬歧义；「先完成这段」等不算歧义 */
-    var compact = msg.replace(/\s/g, "");
-    var clearWrite =
-      scores.body >= 2 ||
-      scores.lead >= 2 ||
-      scores.revise_outline >= 2 ||
-      /完成|这段|继续|充填|正文|冒段|标题|对仗/.test(msg);
-    if (compact.length > 0 && compact.length < 12 && !clearWrite) {
-      if (hasCard && hasBase) scores.ambiguous += 2.5;
-    }
-    if (scores.lead >= 2 && scores.outline >= 2 && scores.body < 2)
-      scores.ambiguous += 2;
-
-    var best = "outline";
-    var bestScore = -1;
-    var k;
-    for (k in scores) {
-      if (k === "ambiguous") continue;
-      if (scores[k] > bestScore) {
-        bestScore = scores[k];
-        best = k;
-      }
-    }
-    /* 已有明确写作分时，不因 ambiguous 分压过 */
-    if (
-      scores.ambiguous >= 2.5 &&
-      bestScore < 2 &&
-      hasCard &&
-      hasBase &&
-      !clearWrite
-    ) {
-      return {
-        intent: "ambiguous",
-        confidence: 0.35,
-        soft: true,
-        focusLine: "",
-        clarifyOptions: [
-          { id: "A", intent: "lead", label: "统领全文写冒段/开头" },
-          { id: "B", intent: "outline", label: "只打磨当前这组标题" }
-        ]
-      };
-    }
-    if (bestScore < 0.5 && hasCard && hasBase && !clearWrite && compact.length < 16) {
-      return {
-        intent: "ambiguous",
-        confidence: 0.35,
-        soft: true,
-        focusLine: "",
-        clarifyOptions: [
-          { id: "A", intent: "lead", label: "统领全文写冒段/开头" },
-          { id: "B", intent: "outline", label: "只打磨当前这组标题" }
-        ]
-      };
-    }
-    var conf = Math.min(0.95, 0.45 + bestScore * 0.12);
-    return packIntent(best, conf, conf < 0.72);
-  }
-
-  function packIntent(intent, confidence, soft) {
-    var choose =
-      "分层仅供参考；本轮采用哪些、忽略哪些由你根据用户意图判断，无关历史结论勿迁入。";
-    var focusLine = "";
-    if (intent === "lead") {
-      focusLine =
-        "【本轮焦点说明】intent=lead：须统领【任务意图】全文框架写开头/冒段；" +
-        "当前标题底稿仅作目录对照，禁止只围着底稿那一节展开。" +
-        choose;
-    } else if (intent === "outline") {
-      focusLine =
-        "【本轮焦点说明】intent=outline：推荐焦点=当前标题/底稿/钉住；" +
-        "任务卡在场防跑出全文范围，但不要强行重开未点选的其它大块。" +
-        choose;
-    } else if (intent === "revise_outline") {
-      focusLine =
-        "【本轮焦点说明】intent=revise_outline：本轮用户改法优先；旧底稿只对照，勿锁死旧架构。" +
-        choose;
-    } else if (intent === "body") {
-      focusLine =
-        "【本轮焦点说明】intent=body：写正文/段落；推荐钉住优先于结论底稿；少新增标题。" +
-        choose;
-    } else if (intent === "chat") {
-      focusLine = "【本轮焦点说明】intent=chat：纯商量，不落稿。" + choose;
-    }
     return {
-      intent: intent,
-      confidence: confidence,
-      soft: !!soft,
-      focusLine: focusLine,
+      intent: "",
+      confidence: 1,
+      soft: false,
+      focusLine: "",
       clarifyOptions: null
     };
   }
@@ -279,10 +138,63 @@
       .trim();
   }
 
-  /** 软修剪：失败轮丢弃；助手多份稿只留短摘要（省 token，不替模型判焦点） */
-  function pruneHistory(chat, limit) {
+  /** 软修剪：失败轮丢弃；助手默认只留口语。同钉住才把最近一次卡片全文附上。 */
+  var CARD_HISTORY_BUDGET = 8000;
+
+  function historyPin(pin) {
+    if (!pin || typeof pin.start !== "number" || typeof pin.end !== "number")
+      return null;
+    return { start: pin.start, end: pin.end };
+  }
+
+  function samePinForCards(cur, msg) {
+    if (!cur) return true;
+    if (!msg || !msg.pinBound) return true;
+    if (typeof msg.pinStart !== "number" || typeof msg.pinEnd !== "number")
+      return false;
+    return cur.start === msg.pinStart && cur.end === msg.pinEnd;
+  }
+
+  function lastVariantsIndex(raw) {
+    var i;
+    for (i = raw.length - 1; i >= 0; i--) {
+      if (
+        raw[i] &&
+        raw[i].role === "assistant" &&
+        raw[i].variants &&
+        raw[i].variants.length
+      )
+        return i;
+    }
+    return -1;
+  }
+
+  function formatHistoryCards(variants) {
+    var budget = CARD_HISTORY_BUDGET;
+    var parts = [];
+    var i;
+    for (i = 0; i < (variants || []).length && i < 6; i++) {
+      var v = variants[i] || {};
+      var id = String(v.id || String.fromCharCode(65 + i));
+      var note = String(v.note || "").trim();
+      var md = String(v.md || "");
+      var block = "【" + id + "】" + (note ? " " + note : "") + "\n" + md;
+      if (block.length > budget) {
+        parts.push(block.slice(0, Math.max(0, budget)) + "\n（truncated）");
+        break;
+      }
+      parts.push(block);
+      budget -= block.length + 2;
+      if (budget <= 0) break;
+    }
+    return parts.join("\n\n");
+  }
+
+  function pruneHistory(chat, limit, pin) {
     limit = limit || 10;
     var raw = (chat || []).slice();
+    var cur = historyPin(pin);
+    var keepCardsAt = lastVariantsIndex(raw);
     var out = [];
     var i;
     for (i = 0; i < raw.length; i++) {
@@ -292,11 +204,14 @@
       if (m.role === "assistant") {
         if (/失败：|模型未给出|空壳|中转不可用/.test(text)) continue;
         if (m.variants && m.variants.length) {
-          text =
-            text.split("\n")[0].slice(0, 180) +
-            "\n（已出 " +
-            m.variants.length +
-            " 组参考，正文略）";
+          text = text.split("\n")[0].slice(0, 180);
+          if (!String(text || "").replace(/\s/g, "")) {
+            text = "已出 " + m.variants.length + " 组参考。";
+          }
+          if (i === keepCardsAt && samePinForCards(cur, m)) {
+            var cards = formatHistoryCards(m.variants);
+            if (cards) text += "\n\n" + cards;
+          }
         } else {
           text = text.slice(0, 1200);
         }
@@ -351,18 +266,12 @@
     return "";
   }
 
-  function buildAlignHint(intent) {
-    return (
-      "\n【同轮自对齐】先在 reply 首句用十多字确认本轮焦点（与 intent=" +
-      intent +
-      " 一致）；需要上下文请先 fetch_context / 读素材，再输出 JSON。\n"
-    );
+  function buildAlignHint() {
+    return "";
   }
 
   /**
-   * 要啥给啥：首包 = 清单 +（用户已钉住则必附 pin 原文）。
-   * 钉住是显式工作面，不是宿主猜语义；底稿/全文/历史仍点名取。
-   * opts: pinText, pinChars, draftChars, taskCard, historyN, docChars, focusLine, intent, soft, confidence, displayMsg, allowEdit
+   * 要啥给啥：首包只报有什么；钉住原文由发送包另附，不进清单。
    */
   function buildContextInventory(opts) {
     opts = opts || {};
@@ -370,62 +279,31 @@
     var pinN =
       Number(opts.pinChars) ||
       (pinRaw ? pinRaw.replace(/\s/g, "").length : 0);
-    var draftN = Number(opts.draftChars) || 0;
     var docN = Number(opts.docChars) || 0;
-    var histN = Number(opts.historyN) || 0;
-    var card = opts.taskCard;
-    var hasCard = cardHasContent(card);
-    var pinAttached = pinN > 0 && !!pinRaw;
-    var lines = [
-      "【可用上下文清单】底稿/全文/任务卡/历史请 fetch_context；" +
-        "素材用 list_files / search_materials / read_file。" +
-        "用户已钉住时 pin 原文已附在下方（工作面），勿空编跑题。",
-      "- pin（钉住范围）：" +
-        (pinAttached
-          ? "有，约" + pinN + "字（首包已附）"
-          : pinN > 0
-            ? "有，约" + pinN + "字；请 fetch_context"
-            : "无"),
-      "- base_draft（用户已采用的结论底稿）：" +
-        (draftN > 0 ? "有，约" + draftN + "字；要则 fetch_context" : "无"),
-      "- task_card（任务卡）：" +
-        (hasCard ? "有；要则 fetch_context" : "无"),
-      "- history（近轮对话）：" + histN + " 条",
-      "- doc_full（当前完整正文）：" +
-        (docN > 0 ? "有，约" + docN + "字；要则 fetch_context 取全文" : "无")
-    ];
-    var focusLine = opts.focusLine ? String(opts.focusLine) : "";
-    var align = opts.allowEdit ? buildAlignHint(opts.intent || "outline") : "";
-    var pinBlock = "";
-    if (pinAttached) {
-      pinBlock =
-        "\n【钉住范围·本轮工作面】产出须紧贴此范围；" +
-        "若仅为标题/范围且其下尚无正文，请在其下充填可落稿表述（勿另起无关专名主题）；" +
-        "缺事实/数字先读素材再写，禁止无依据空编。\n" +
-        pinRaw.slice(0, 6000) +
-        "\n";
+    var matN = Number(opts.matCount) || 0;
+    var lines = ["【还有什么】（未附正文；要则点名）"];
+    if (docN > 0) {
+      lines.push(
+        "- 全文 doc_full：有，约 " + docN + " 字 → fetch_context([\"doc_full\"])"
+      );
     }
-    var block =
-      (focusLine ? "\n" + focusLine + "\n" : "") +
-      pinBlock +
-      "\n" +
-      lines.join("\n") +
-      "\n" +
-      align;
+    if (matN > 0) {
+      lines.push(
+        "- 素材：有，约 " +
+          matN +
+          " 个文件 → list_files / search_materials / read_file"
+      );
+    }
+    var block = lines.length > 1 ? "\n" + lines.join("\n") + "\n" : "";
     return {
       block: block,
       trace: {
-        intent: opts.intent || "outline",
-        confidence: opts.confidence != null ? opts.confidence : null,
-        soft: !!opts.soft,
         mode: "inventory",
-        layers: pinAttached ? ["inventory", "pin"] : ["inventory"],
+        layers: ["inventory"],
         pinChars: pinN,
-        pinAttached: pinAttached,
-        draftChars: draftN,
+        pinAttached: pinN > 0,
         docChars: docN,
-        historyN: histN,
-        hasCard: hasCard,
+        matCount: matN,
         msgChars: String(opts.displayMsg || "").length
       }
     };

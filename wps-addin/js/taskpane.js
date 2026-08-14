@@ -36,7 +36,9 @@
     busyTimer: null,
     busyAt: 0,
     /** 本轮发送前自动档相对路径（挂到助手消息） */
-    pendingTurnAutoRel: ""
+    pendingTurnAutoRel: "",
+    /** 还原本轮后：当前结论卡不可落/预览/采用，直到下一轮出结果 */
+    writeLiveFrozen: false
   };
 
   function $(id) {
@@ -138,47 +140,14 @@
   function paintUnderstandBar(classified, assembled, align) {
     classified = classified || {};
     assembled = assembled || {};
-    var intent = classified.intent || "";
-    var short;
-    var line;
-    if (align && align.tipLine) {
-      short = align.short || statusIntentLabel(intent);
-      line = align.tipLine;
-      state.lastUnderstand = {
-        short: short,
-        line: line,
-        intent: intent,
-        align: align.trace || null
-      };
-    } else {
-      var layers = (assembled.trace && assembled.trace.layers) || [];
-      var layerHint = "本轮话";
-      if (layers.indexOf("inventory") >= 0 || (assembled.trace && assembled.trace.mode === "inventory"))
-        layerHint = "清单点名";
-      else if (
-        layers.indexOf("L1") >= 0 &&
-        (layers.indexOf("L3") >= 0 || layers.indexOf("L3toc") >= 0)
-      )
-        layerHint = "任务+底稿";
-      else if (layers.indexOf("L1") >= 0) layerHint = "任务框架";
-      else if (layers.indexOf("L3toc") >= 0) layerHint = "目录对照";
-      else if (layers.indexOf("L3") >= 0) layerHint = "当前底稿";
-      else if (layers.indexOf("pin") >= 0) layerHint = "钉住范围";
-      short = statusIntentLabel(intent);
-      var detail = "";
-      if (classified.focusLine) {
-        detail = String(classified.focusLine)
-          .replace(/【本轮焦点说明】\s*/g, "")
-          .replace(/intent=\w+：?/g, "")
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 56);
-      }
-      line = detail
-        ? "理解：" + short + " · " + detail
-        : "理解：" + short + " · 用" + layerHint;
-      state.lastUnderstand = { short: short, line: line, intent: intent };
-    }
+    var pinOn = assembled.trace && assembled.trace.pinChars > 0;
+    var short = "撰写";
+    var line = pinOn ? "清单已列钉住 · 要则点名取" : "清单点名 · 要啥给啥";
+    state.lastUnderstand = {
+      short: short,
+      line: line,
+      intent: classified.intent || ""
+    };
     var st = $("aiEditStatus");
     if (st) st.textContent = short;
     tip(line);
@@ -396,6 +365,9 @@
         });
       }
       if (m.autoVersionRel) o.autoVersionRel = String(m.autoVersionRel);
+      if (m.pinBound) o.pinBound = true;
+      if (typeof m.pinStart === "number") o.pinStart = m.pinStart;
+      if (typeof m.pinEnd === "number") o.pinEnd = m.pinEnd;
       if (m.suite) o.suite = true;
       if (m.suiteOptions && m.suiteOptions.length) {
         o.suiteOptions = m.suiteOptions.slice(0, 6).map(function (opt) {
@@ -593,7 +565,7 @@
     }
   }
 
-  /** 本轮焦点：钉住优先，否则空（全文走 doc_md） */
+  /** 钉住原文（有则返回）；全文不走这里 */
   function focusContextMd() {
     var pin = workText();
     if (pin.replace(/\s/g, "")) return pin.slice(0, 6000);
@@ -659,66 +631,24 @@
     var hasBody = levels.indexOf("body") >= 0;
     parts.push("用户已点选产出层级：" + levels.join(",") + "。");
     parts.push(
-      "Markdown 井号必须与点选层级严格一致：落稿按 # 个数套字体，井号多写/少写都会错。"
+      "落稿按井号套字体：# 文题、## 一级、### 二级、#### 三级。只输出点选层级，未点选的井号不要出现。"
     );
-    parts.push("只输出点选的层级，未点选的层级禁止出现。");
     if (hasH1) {
-      parts.push(
-        "文题：options[].md / edit.md 开头必须有一行「# …」材料/本稿大标题（一个井号，宋体居中题名）。" +
-          "大标题优先取自钉住范围、当前文首、通知或引用素材中的正式题名；没有则据任务拟一个像公文的题名，禁止用「提纲」「参考」这类空题。"
-      );
-      parts.push(
-        "一级：必须写成「## 一、…」「## 二、…」（两个井号）。" +
-          "禁止把一级写成单个 # 或 ###；措辞优先对仗（前半、后半都要有区分度）。" +
-          "有文题 # 后再写 ##，不要只有 ## 没有大标题。"
-      );
+      parts.push("点选了一级：先一行「# …」文题，再「## 一、…」。不要用单个 # 写章节。");
     }
     if (hasH2) {
-      parts.push(
-        "二级：必须写成「### （一）…」「### （二）…」（三个井号）。" +
-          "禁止写成单个 # 或 ##；" +
-          "子主题必须服从【会话既定要求】与钉住一级的题意：" +
-          "用户已说的「第N点/大致思路」里的主干意图优先；其后「包含/比如…」只作举例，不得压过主干、另起炉灶；" +
-          "禁止抛开用户已定结构，仅凭素材目录另编无关条目（除非用户或钉住范围明确要求）；" +
-          "条数紧贴该一级下应有的子题，宜 2～5 条，勿凑满无关条目；" +
-          "多组参考子主题集合一致，仅变换对仗措辞。"
-      );
-      if (!hasH1) {
-        parts.push(
-          "本轮未点选一级：options[].md / edit.md 禁止出现任何「## 一、…」一级行，" +
-            "也禁止重复钉住范围内已有的一级标题原文；只输出 ### 二级行。" +
-            "钉住一级只表示研究范围，不是要你再输出那一行一级标题。"
-        );
-      }
+      parts.push("点选了二级：行首「### （一）…」。");
+      if (!hasH1) parts.push("未点选一级：不要输出 ## 行。");
     }
     if (hasH3) {
-      parts.push(
-        "三级：必须写成「#### …」（四个井号）。禁止用 # / ## / ### 冒充三级。"
-      );
-      if (!hasH1 && !hasH2) {
-        parts.push(
-          "本轮未点选一/二级：禁止输出 ## 或 ### 行；钉住上级只表示范围。"
-        );
-      }
+      parts.push("点选了三级：行首「#### …」。");
+      if (!hasH1 && !hasH2) parts.push("未点选一/二级：不要输出 ## 或 ### 行。");
     }
-    if (hasBody) parts.push("正文：标题下的事实与表述段落；无依据标【待核实】。");
+    if (hasBody && !hasH1 && !hasH2 && !hasH3) {
+      parts.push("点选了正文、未点选标题：不要标题井号行。");
+    }
     if (!hasBody && (hasH1 || hasH2 || hasH3)) {
-      parts.push("本次只要标题骨架，少写长段正文。");
-    }
-    if (!hasH1 && !hasH2 && !hasH3 && hasBody) {
-      parts.push("本次只要正文段落，不要新增标题行。");
-    }
-    parts.push(
-      "用户说「喜欢 xxxxxxxx,xxxxxxxx 句式」只约束措辞，不改变点选层级，未点选层仍禁止输出。"
-    );
-    if (!hasH1) {
-      parts.push(
-        "本轮未点选一级：章节标题不要用单个 #（单个 # 仅全文大标题，且仅在点选一级时输出）。"
-      );
-    } else {
-      parts.push(
-        "单个 # 仅用于文首大标题一行；一级章节一律用 ##，禁止再用单个 # 冒充「一、二、三」。"
-      );
+      parts.push("未点选正文：只要标题行。");
     }
     return parts.join("");
   }
@@ -726,18 +656,22 @@
   function pinnedScopeHint() {
     var t = workText();
     if (!t.replace(/\s/g, "")) return "";
-    var levels = selectedWriteLevels();
-    var childOnly =
-      levels.length &&
-      levels.indexOf("h1") < 0 &&
-      (levels.indexOf("h2") >= 0 || levels.indexOf("h3") >= 0);
-    var head =
-      "用户已钉住研究范围，产出须紧贴该范围（可含其下应出现的子级），勿改动范围外其它同级块。";
-    if (childOnly) {
-      head +=
-        "钉住内容是上级标题/范围，请在其下展开点选层级；不要把钉住的上级标题再写入 md。";
+    return "\n【钉住范围】\n" + t.slice(0, 6000);
+  }
+
+  function buildWriteUserPacket(req, pin, inv) {
+    var parts = ["【要求】\n" + String(req || "").trim()];
+    var p = String(pin || "").trim();
+    if (p.replace(/\s/g, "")) {
+      var n = p.replace(/\s/g, "").length;
+      if (p.length > 6000) {
+        p = p.slice(0, 6000) + "\n（已截断，共约" + n + "字）";
+      }
+      parts.push("【钉住】\n" + p);
     }
-    return head + "\n【钉住范围】\n" + t.slice(0, 6000);
+    var invT = String(inv || "").trim();
+    if (invT) parts.push(invT);
+    return parts.join("\n\n");
   }
 
   /** 上次若把形态话术灌进输入框，点选变更时清掉，改由发送时静默携带 */
@@ -776,79 +710,12 @@
    */
   function composeWriteLevelPrompt(levels) {
     if (!levels || !levels.length) return "";
-    var has = function (k) {
-      return levels.indexOf(k) >= 0;
-    };
-    var titles = [];
-    if (has("h1")) titles.push("一级标题");
-    if (has("h2")) titles.push("二级标题");
-    if (has("h3")) titles.push("三级标题");
-    var onlyBody = !titles.length && has("body");
-    var withBody = has("body");
-    var pinned = !!(state.work && String(state.work.text || "").replace(/\s/g, ""));
-
-    if (onlyBody) {
-      return pinned
-        ? "请在钉住范围内撰写正文，不要新增标题行；无依据处标【待核实】。"
-        : "请撰写正文段落，不要新增标题行；无依据处标【待核实】。";
-    }
-
-    var scope = pinned
-      ? "紧贴钉住范围展开，勿改动范围外其它同级块。"
-      : "按本稿需要组织。";
-
-    if (titles.length === 1 && titles[0] === "二级标题" && !has("h1")) {
-      return (
-        "请只给出二级标题，每行必须是「### （一）…」「### （二）…」（三个井号）。" +
-        (pinned
-          ? "已钉住一级范围：不要再输出「## 一、…」或重复钉住的一级标题；只在其下写 ###。"
-          : scope) +
-        "必须紧扣会话里用户已定的结构要点与该一级题意；" +
-        "「包含/比如…」是举例，不得压过主干；" +
-        "子主题从钉住范围与用户要点并列项拆出，一条对应一个具体对象；" +
-        "不要抛开用户要求去堆素材里的其它条目；" +
-        (withBody
-          ? "可在各二级下附简短正文要点；"
-          : "只要二级标题骨架，少写长段；") +
-        "禁止单个 #，禁止 ##。对仗句式优先。"
-      );
-    }
-    if (titles.length === 1 && titles[0] === "三级标题" && !has("h2") && !has("h1")) {
-      return (
-        "请只给出三级标题，每行必须是「#### …」（四个井号）。" +
-        (pinned
-          ? "已钉住上级范围：不要输出上级 ## / ### 行，只写 ####。"
-          : scope) +
-        (withBody ? "可附简短正文要点；" : "只要三级标题骨架，少写长段；") +
-        "禁止用 # / ## / ### 冒充三级。"
-      );
-    }
-    if (titles.length === 1 && titles[0] === "一级标题") {
-      return (
-        "请给出可落稿骨架：先写一行材料大标题「# …」（一个井号），再写一级「## 一、…」「## 二、…」（两个井号），措辞优先对仗。" +
-        "大标题取自通知/素材/本稿题名，务求像正式公文文题。" +
-        scope +
-        (withBody
-          ? "可在一级下附简短正文要点；"
-          : "只要文题+一级标题骨架，不要二级/三级，少写长段；") +
-        "禁止缺大标题；禁止用单个 # 写「一、二、三」；禁止 ### / ####。" +
-        (withBody ? "未点选的更细标题层级不要出现。" : "")
-      );
-    }
-
-    /* 多选标题：一条里列齐，明确「只出点选层」 */
-    var head =
-      "请给出" +
-      titles.join("、") +
-      (withBody ? "，并在相应标题下写正文要点" : "标题骨架（少写长段正文）") +
-      "。";
-    var rule =
-      "只输出已点选的层级，未点选的层级不要出现。" + scope;
-    if (has("h1")) rule += "一级用 ##；";
-    if (has("h2")) rule += "二级用 ### （一）（二）；";
-    if (has("h3")) rule += "三级用 ####；";
-    if (withBody) rule += "无依据标【待核实】。";
-    return head + rule;
+    var bits = [];
+    if (levels.indexOf("h1") >= 0) bits.push("一级=# 文题 + ## 一、");
+    if (levels.indexOf("h2") >= 0) bits.push("二级=### （一）");
+    if (levels.indexOf("h3") >= 0) bits.push("三级=####");
+    if (levels.indexOf("body") >= 0) bits.push("正文=段落");
+    return "点选层级：" + bits.join("；") + "。";
   }
 
   function ensureBase() {
@@ -1067,7 +934,7 @@
     if (!hist && state.adoptedId === opt.id) cls += " adopted";
     else if (!hist && state.previewId === opt.id) cls += " chosen";
     var actions = hist
-      ? '<div class="ai-actions"><span class="ai-hist-note">换钉前方案 · 仅供查看</span></div>'
+      ? '<div class="ai-actions"><span class="ai-hist-note">仅供查看</span></div>'
       : '<div class="ai-actions">' +
         '<button type="button" data-ai-preview="' +
         escHtml(opt.id) +
@@ -1422,6 +1289,53 @@
     return !!(b && b.mi === mi && b.vi === vi);
   }
 
+  function bindBubblePin(bubble) {
+    bubble.pinBound = true;
+    if (
+      state.work &&
+      typeof state.work.start === "number" &&
+      typeof state.work.end === "number"
+    ) {
+      bubble.pinStart = state.work.start;
+      bubble.pinEnd = state.work.end;
+    }
+  }
+
+  function currentWorkPin() {
+    if (
+      state.work &&
+      typeof state.work.start === "number" &&
+      typeof state.work.end === "number"
+    ) {
+      return { start: state.work.start, end: state.work.end };
+    }
+    return null;
+  }
+
+  /** 本轮可落稿的结论卡：最后一条带 variants 的助手消息，且其后还没有新的用户发送 */
+  function liveWriteAssistantIndex() {
+    if (state.writeLiveFrozen) return -1;
+    var list = writeChat() || [];
+    var lastAsst = -1;
+    var i;
+    for (i = list.length - 1; i >= 0; i--) {
+      if (
+        list[i] &&
+        list[i].role === "assistant" &&
+        list[i].variants &&
+        list[i].variants.length
+      ) {
+        lastAsst = i;
+        break;
+      }
+    }
+    if (lastAsst < 0) return -1;
+    for (i = lastAsst + 1; i < list.length; i++) {
+      if (list[i] && list[i].role === "user") return -1;
+    }
+    return lastAsst;
+  }
+
   /** @deprecated 由 Kernel.assembleWriteLayers 替代；保留兜底 */
   function baseDraftConstraint() {
     var md = resolveBaseDraftMd();
@@ -1431,6 +1345,11 @@
 
   function handleCardApply(mode, src) {
     var loc = parseCardSrc(src);
+    var writeMode = mode === "full" || mode === "cursor" || mode === "sel";
+    if (writeMode && (!loc || loc.mi !== liveWriteAssistantIndex())) {
+      tip("上一轮结论仅供查看，请用本轮卡片落稿");
+      return;
+    }
     if (loc) markBaseDraft(loc.mi, loc.vi, "card_" + mode);
     var md = resolveChatMd(src);
     if (mode === "full") applyDraftFull(md);
@@ -1447,7 +1366,8 @@
       return { ok: false, soft: true, error: "工程模块未就绪" };
     }
     try {
-      var sv = GwProject.saveAutoVersion();
+      var kind = state.tab === "suite" ? "suite" : "write";
+      var sv = GwProject.saveAutoVersion(kind);
       if (sv && sv.ok && sv.path) {
         state.pendingTurnAutoRel = String(sv.path);
         return sv;
@@ -1478,7 +1398,10 @@
     if (!saveFn) {
       throw new Error("无法存版本：工程模块未就绪");
     }
-    var sv = saveFn.call(GwProject);
+    var sv = saveFn.call(
+      GwProject,
+      state.tab === "suite" ? "suite" : "write"
+    );
     if (!sv || !sv.ok) {
       throw new Error((sv && sv.error) || "存版本失败，已中止写入");
     }
@@ -1519,6 +1442,19 @@
       return;
     }
     tip("已还原本轮发送前正文");
+    freezeLiveTurnActions();
+  }
+
+  /** 还原本轮后与点发送后相同：当前轮预览/采用/整篇/光标/选定收掉 */
+  function freezeLiveTurnActions() {
+    state.writeLiveFrozen = true;
+    if (state.options && state.options.length) {
+      archiveSuiteOptionsToChat();
+      clearSuiteSuggestions();
+    }
+    renderOpts();
+    syncTabUi();
+    syncRestoreBtn();
   }
 
   /** 每个改正文的点击：先存版本，再执行写入 */
@@ -1981,6 +1917,7 @@
   }
 
   function previewOpt(id) {
+    if (!state.options.length) return;
     var opt = findOpt(id);
     if (!opt || !state.work) return;
     try {
@@ -2012,6 +1949,7 @@
   }
 
   function adoptOpt(id) {
+    if (!state.options.length) return;
     var opt = findOpt(id);
     if (!opt || !state.work) return;
     try {
@@ -2103,11 +2041,19 @@
     var ha = $("aiHeadActions");
     if (ha) ha.hidden = false;
     var lv = selectedWriteLevels();
+    var liveMi = tab === "write" ? liveWriteAssistantIndex() : -1;
+    var liveHasCards =
+      liveMi >= 0 &&
+      writeChat()[liveMi] &&
+      writeChat()[liveMi].variants &&
+      writeChat()[liveMi].variants.length;
     $("aiReq").placeholder =
       tab === "suite"
         ? "写精修要求，或点上方充填 / 润色…"
-        : wantVariantsChecked() || wantDraftChecked()
-          ? "在此说明要什么结构/侧重…（点选层级后发送）"
+        : liveHasCards
+          ? "可直接说：用第二组再短一点；或点卡片写入"
+          : wantVariantsChecked() || wantDraftChecked()
+            ? "在此说明要什么结构/侧重…（点选层级后发送）"
             : "纯聊天，或点选层级后勾选「出结论/多份」…";
     $("aiSend").textContent =
       state.busy
@@ -2393,6 +2339,7 @@
     }
     var log = document.createElement("div");
     log.className = "ai-chat-log";
+    var liveMi = liveWriteAssistantIndex();
     activeChat().forEach(function (m, mi) {
       var b = document.createElement("div");
       b.className = "ai-bubble " + (m.role === "user" ? "user" : "assistant");
@@ -2419,10 +2366,13 @@
         b.appendChild(turnRow);
       }
       if (m.role === "assistant" && m.variants && m.variants.length) {
+        var liveCard = mi === liveMi;
         m.variants.forEach(function (v, vi) {
           var card = document.createElement("div");
           card.className =
-            "ai-variant" + (isBaseDraftCard(mi, vi) ? " is-base" : "");
+            "ai-variant" +
+            (isBaseDraftCard(mi, vi) ? " is-base" : "") +
+            (liveCard ? "" : " write-hist");
           var head = document.createElement("div");
           head.className = "ai-variant-head";
           var title =
@@ -2441,34 +2391,48 @@
           var acts = document.createElement("div");
           acts.className = "ai-actions";
           var src = String(mi) + ":" + String(vi);
-          [
-            {
-              mode: "full",
-              label: "整篇",
-              primary: true,
-              title: "先存版本，再按层级排版覆盖当前全文"
-            },
-            {
-              mode: "cursor",
-              label: "光标",
-              title: "先存版本，再插入到光标处"
-            },
-            {
-              mode: "sel",
-              label: "选定",
-              title: "先存版本，再覆盖当前划选"
-            },
-            { mode: "copy", label: "复制", title: "复制到剪贴板" }
-          ].forEach(function (spec) {
-            var btn = document.createElement("button");
-            btn.type = "button";
-            if (spec.primary) btn.className = "primary";
-            btn.textContent = spec.label;
-            btn.title = spec.title;
-            btn.setAttribute("data-apply", spec.mode);
-            btn.setAttribute("data-src", src);
-            acts.appendChild(btn);
-          });
+          if (liveCard) {
+            [
+              {
+                mode: "full",
+                label: "整篇",
+                primary: true,
+                title: "先存版本，再按层级排版覆盖当前全文"
+              },
+              {
+                mode: "cursor",
+                label: "光标",
+                title: "先存版本，再插入到光标处"
+              },
+              {
+                mode: "sel",
+                label: "选定",
+                title: "先存版本，再覆盖当前划选"
+              },
+              { mode: "copy", label: "复制", title: "复制到剪贴板" }
+            ].forEach(function (spec) {
+              var btn = document.createElement("button");
+              btn.type = "button";
+              if (spec.primary) btn.className = "primary";
+              btn.textContent = spec.label;
+              btn.title = spec.title;
+              btn.setAttribute("data-apply", spec.mode);
+              btn.setAttribute("data-src", src);
+              acts.appendChild(btn);
+            });
+          } else {
+            var histNote = document.createElement("span");
+            histNote.className = "ai-hist-note";
+            histNote.textContent = "上一轮结论 · 仅供查看";
+            acts.appendChild(histNote);
+            var copyBtn = document.createElement("button");
+            copyBtn.type = "button";
+            copyBtn.textContent = "复制";
+            copyBtn.title = "复制到剪贴板";
+            copyBtn.setAttribute("data-apply", "copy");
+            copyBtn.setAttribute("data-src", src);
+            acts.appendChild(copyBtn);
+          }
           card.appendChild(head);
           card.appendChild(pre);
           card.appendChild(acts);
@@ -2623,7 +2587,11 @@
   /** 发给中转的近期对话（软修剪） */
   function chatHistoryForRelay() {
     if (window.GwContextKernel && GwContextKernel.pruneHistory) {
-      return GwContextKernel.pruneHistory(writeChat() || [], 10);
+      return GwContextKernel.pruneHistory(
+        writeChat() || [],
+        10,
+        currentWorkPin()
+      );
     }
     return (writeChat() || [])
       .slice(-16)
@@ -2640,29 +2608,7 @@
 
   /** 兼容：无 Kernel 时仍捞关键词句 */
   function sessionFrameworkHint() {
-    if (window.GwContextKernel && state.taskCard) {
-      return GwContextKernel.renderTaskCard(state.taskCard);
-    }
-    var bits = [];
-    var i;
-    for (i = (writeChat() || []).length - 1; i >= 0 && bits.length < 4; i--) {
-      var m = writeChat()[i];
-      if (!m || m.role !== "user") continue;
-      var t = String(m.text || "");
-      if (
-        /第[一二三四五六七八九十\d]+点|大致思路|框架|提纲|分管|负责|包含|比如|对仗|句式|字数|通知/.test(
-          t
-        )
-      ) {
-        bits.unshift(t.slice(0, 1800));
-      }
-    }
-    if (!bits.length) return "";
-    return (
-      "\n【会话既定要求】以下是用户此前定下的结构/要点，本轮产出必须服从，不得抛开另编：\n" +
-      bits.join("\n---\n") +
-      "\n"
-    );
+    return "";
   }
 
   function sendWrite() {
@@ -2693,211 +2639,49 @@
       displayMsg = "请按已点选的产出层级给出结论。";
     }
 
+    /* 发出即收掉上一轮整篇/光标/选定，不等登录或模型返回 */
+    state.writeLiveFrozen = true;
+    renderOpts();
+
     if (!state.taskCard && window.GwContextKernel) {
       state.taskCard = GwContextKernel.emptyCard();
     }
-    if (window.GwContextKernel) {
-      state.taskCard = GwContextKernel.ingestUserMessage(
-        state.taskCard,
-        displayMsg
-      );
-    }
 
-    var forcedIntent = null;
-    if (state.pendingClarify && window.GwContextKernel) {
-      var chosen = GwContextKernel.parseClarifyChoice(
-        displayMsg,
-        state.pendingClarify.options
-      );
-      if (chosen) {
-        forcedIntent = chosen.intent;
-        logInfo("ctx.clarify.ok", { intent: forcedIntent });
-      } else {
-        logInfo("ctx.clarify.cancel", { reason: "user_continue" });
-      }
-      state.pendingClarify = null;
-    }
-
-    var classified = {
-      intent: "outline",
-      confidence: 0.7,
-      focusLine: "",
-      soft: false
-    };
-    if (window.GwContextKernel) {
-      classified = GwContextKernel.classify({
-        message: displayMsg,
-        levels: levels,
-        allowEdit: allow,
-        hasTaskCard: GwContextKernel.cardHasContent(state.taskCard),
-        hasBaseDraft: !!String(resolveBaseDraftMd() || "").replace(/\s/g, ""),
-        forcedIntent: forcedIntent
-      });
-    }
-
-    if (
-      classified.intent === "ambiguous" &&
-      allow &&
-      window.GwContextKernel &&
-      !state._clarifyAskedOnce
-    ) {
-      var ask = GwContextKernel.clarifyPrompt(classified.clarifyOptions);
-      state.pendingClarify = {
-        options: classified.clarifyOptions,
-        asks: 1
-      };
-      state._clarifyAskedOnce = true;
-      state.chatWrite.push({ role: "user", text: displayMsg });
-      state.chatWrite.push({ role: "assistant", text: ask });
-      persistChat("clarify");
-      logInfo("ctx.clarify", { options: classified.clarifyOptions });
-      $("aiReq").value = "";
-      renderOpts();
-      state.lastUnderstand = {
-        short: "待确认",
-        line: "理解：待确认 · 请回复 A 或 B",
-        intent: "ambiguous"
-      };
-      var stAsk = $("aiEditStatus");
-      if (stAsk) stAsk.textContent = "待确认";
-      tip(state.lastUnderstand.line);
-      return;
-    }
-    if (classified.intent === "ambiguous" && allow && window.GwContextKernel) {
-      var fb =
-        levels.indexOf("body") >= 0
-          ? "body"
-          : levels.length
-            ? "outline"
-            : "body";
-      classified = GwContextKernel.classify({
-        message: displayMsg,
-        levels: levels,
-        allowEdit: allow,
-        hasTaskCard: true,
-        hasBaseDraft: false,
-        forcedIntent: fb
-      });
-      state.pendingClarify = null;
-      logInfo("ctx.clarify.soft_fallback", { intent: classified.intent });
-    }
+    var classified = { intent: "", confidence: 1, focusLine: "", soft: false };
 
     var assembled = { block: "", trace: {} };
-    var alignCard = null;
     var pinText = workText();
-    var baseMd = allow ? resolveBaseDraftMd() : "";
     var docMd = currentDocMd();
     var hist = chatHistoryForRelay();
+    var matCount = 0;
+    try {
+      if (window.GwMaterialIndex && GwMaterialIndex.workspaceForAi) {
+        var wsInv = GwMaterialIndex.workspaceForAi() || {};
+        matCount = (wsInv.materials && wsInv.materials.length) || 0;
+      }
+    } catch (eInv) {}
     if (window.GwContextKernel && GwContextKernel.buildContextInventory) {
       assembled = GwContextKernel.buildContextInventory({
-        intent: classified.intent,
-        confidence: classified.confidence,
-        soft: classified.soft,
-        focusLine: classified.focusLine,
-        taskCard: state.taskCard,
-        allowEdit: allow,
         displayMsg: displayMsg,
         pinText: pinText || "",
         pinChars: String(pinText || "").replace(/\s/g, "").length,
-        draftChars: String(baseMd || "").replace(/\s/g, "").length,
         docChars: String(docMd || "").replace(/\s/g, "").length,
-        historyN: (hist && hist.length) || 0
-      });
-      logInfo("ctx.trace", assembled.trace);
-    } else if (window.GwContextKernel) {
-      assembled = GwContextKernel.assembleWriteLayers({
-        intent: classified.intent,
-        confidence: classified.confidence,
-        soft: classified.soft,
-        focusLine: classified.focusLine,
-        taskCard: state.taskCard,
-        baseMd: baseMd,
-        pinText: pinText || "",
-        pinHint: pinnedScopeHint(),
-        allowEdit: allow,
-        displayMsg: displayMsg,
-        docChars: String(docMd || "").replace(/\s/g, "").length,
-        historyN: (hist && hist.length) || 0
+        matCount: matCount
       });
       logInfo("ctx.trace", assembled.trace);
     } else {
-      assembled.block = sessionFrameworkHint();
+      assembled.block = "";
     }
     var matsEarly = citedMaterials();
     refreshStyleFingerprint();
-    alignCard = buildAlignCardForSend(
-      classified,
-      assembled,
-      matsEarly,
-      allow,
-      displayMsg
-    );
-    if (alignCard && alignCard.promptBlock) assembled.block += alignCard.promptBlock;
-    paintUnderstandBar(classified, assembled, alignCard);
+    paintUnderstandBar(classified, assembled, null);
 
     var mats = matsEarly;
-    var levelRule = levels.length ? writeLevelConstraint(levels) : "";
-    var shapeCarry = allow ? levelShapeCarry(levels) : "";
-    var ctxBlock = assembled.block;
-    var sessionSum = String(classified.focusLine || "").slice(0, 800);
     var contextBag = {
       pin: pinText || "",
-      base_draft: baseMd || "",
-      task_card: window.GwContextKernel
-        ? GwContextKernel.renderTaskCard(state.taskCard)
-        : "",
-      history: hist,
       doc_full: docMd || ""
     };
-    var sendMsg = displayMsg;
-    if (wantVars) {
-      var markerHint = "含点选层级对应的标题行，井号个数必须正确";
-      if (levels.indexOf("h1") >= 0 && levels.indexOf("h2") < 0)
-        markerHint =
-          "先 # 大标题一行，再 ## 一、…（两井号）；禁止用 # 写章节；禁止 ###";
-      else if (levels.indexOf("h2") >= 0 && levels.indexOf("h1") < 0)
-        markerHint =
-          "每行二级必须是 ### （一）…（三井号）；禁止再写 ## 一级；禁止单个 #";
-      else if (levels.indexOf("h1") >= 0 && levels.indexOf("h2") >= 0)
-        markerHint =
-          "先 # 大标题，再一级 ##、二级 ###；禁止用单个 # 当「一、二、三」";
-      sendMsg =
-        displayMsg +
-        shapeCarry +
-        ctxBlock +
-        "\n\n【宿主约束】已勾选「给多份」。" +
-        "必须输出 JSON：{reply, options:[{id,md,note},...]}，edit 必须为 null。" +
-        "严禁空壳【待补】占位模板。" +
-        "每组 options[].md 必须是可落稿 Markdown（" +
-        markerHint +
-        "）。井号错了整行字体都会错，请自检后再输出。" +
-        "禁止只在 reply 里用自然语言罗列标题。" +
-        "须遵守【本轮焦点说明】与已附【钉住范围】；" +
-        "底稿/全文/历史要则 fetch_context；缺事实先 list_files 或 search_materials 再 read_file。" +
-        "禁止编造未读到的新数字；无出处标【待核实】；禁止谎称「据材料落稿」。" +
-        levelRule +
-        "options 须 2～6 组：份数由你按差异空间决定（分歧大可多给，改动小给 2～3 即可，不必凑满）；" +
-        "用户写明组数则从其。每组 note 一句差异；reply 一两句；禁止声称已写入；无依据勿编造。";
-    } else if (wantDraft) {
-      sendMsg =
-        displayMsg +
-        shapeCarry +
-        ctxBlock +
-        "\n\n【宿主约束】已勾选「出结论」。" +
-        "输出一版：JSON 为 {reply, edit:{md}}；edit.md 必须是可落稿 Markdown，禁止只在 reply 描述。" +
-        "严禁空壳【待补】占位模板。井号必须与点选层级一致（##=一级，###=二级，####=三级）；禁止用单个 # 当章节标题。" +
-        "须遵守【本轮焦点说明】与已附【钉住范围】；底稿/全文要则 fetch_context；缺事实先读素材。" +
-        "禁止编造未读到的新数字；无出处标【待核实】；禁止谎称「据材料落稿」。" +
-        levelRule +
-        "禁止声称已写入；无依据处标待核实。";
-    } else {
-      sendMsg =
-        displayMsg +
-        ctxBlock +
-        "\n\n【宿主约束】未勾选「出结论/给多份」：纯聊天。" +
-        "只用 reply；edit 与 options 必须为 null；禁止输出可落稿正文或空壳占位。" +
-        "可 fetch_context / 读素材后再答；要落稿时请点选层级并勾选后再出。";
-    }
+    var sendMsg = buildWriteUserPacket(displayMsg, pinText, assembled.block);
     withLogin(function () {
       setBusy(true);
       tipProgress(allow ? "撰写中…" : "聊天中…");
@@ -2944,9 +2728,11 @@
                 allowEdit: allow,
                 materials: mats,
                 history: hist,
-                session_summary: sessionSum,
+                session_summary: "",
                 read_set: (state.readSet || []).slice(),
                 contextBag: contextBag,
+                want_options: !!wantVars,
+                write_levels: levels,
                 onStatus: function (s) {
                   var t = String(s || "");
                   if (/已自动精读|自动精读失败|正在自动精读|已回灌/.test(t)) tip(t);
@@ -2971,9 +2757,11 @@
                 mats,
                 {
                 history: hist,
-                session_summary: sessionSum,
+                session_summary: "",
                 doc_md: "",
-                read_set: (state.readSet || []).slice()
+                read_set: (state.readSet || []).slice(),
+                want_options: !!wantVars,
+                write_levels: levels
               }).then(
                 function (data) {
                   return {
@@ -2991,23 +2779,6 @@
                 if (p && state.readSet.indexOf(p) < 0) state.readSet.push(p);
               });
               logInfo("chat.read_set", { n: state.readSet.length });
-              if (alignCard) {
-                alignCard = buildAlignCardForSend(
-                  classified,
-                  assembled,
-                  mats,
-                  allow,
-                  displayMsg
-                );
-                if (alignCard) {
-                  state.lastUnderstand = {
-                    short: alignCard.short,
-                    line: alignCard.tipLine,
-                    intent: classified.intent,
-                    align: alignCard.trace
-                  };
-                }
-              }
             }
             var reply = (data && data.reply) || "(空回复)";
             var editMd = allow ? normalizeEditMd(data && data.edit) : "";
@@ -3064,13 +2835,15 @@
               variants: variants,
               autoVersionRel: state.pendingTurnAutoRel || ""
             };
+            if (variants && variants.length) bindBubblePin(bubble);
+            state.writeLiveFrozen = !(variants && variants.length);
             if (wantVars && variants.length >= 2) {
               bubble.text =
                 reply +
                 (/\n/.test(reply) ? "\n\n" : "\n") +
                 "（以下 " +
                 variants.length +
-                " 组参考，用卡片「选定 / 光标 / 整篇」写入；已有正文时优先选定或光标）";
+                " 组参考，用卡片「选定 / 光标 / 整篇」写入；也可直接说「用第二组再短一点」。）";
               tip("已出 " + variants.length + " 组参考 · 卡片上直接落稿");
             } else if (wantVars && variants.length === 1) {
               tip("仅得 1 组 · 卡片上直接落稿");
@@ -3093,7 +2866,7 @@
               bubble.text =
                 reply +
                 (/\n/.test(reply) ? "\n\n" : "\n") +
-                "（用卡片按钮写入；每次先存版本）";
+                "（用卡片按钮写入；也可直接再说要求续改。）";
               tip("结论已出 · 卡片上点小按钮写入");
             } else {
               tip("完成");
@@ -3309,6 +3082,7 @@
             }
           }
           archiveSuiteOptionsToChat();
+          state.writeLiveFrozen = false;
           state.options = normalizeOptions((data && data.options) || []);
           /* 必须写入 chatSuite：请求返回时用户可能已切到撰写，activeChat() 会写错轨 */
           state.chatSuite.push({
@@ -3702,7 +3476,12 @@
         tab: state.tab,
         stack: "user_click_aiClearChat"
       });
-      /* 铁律：清空对话绝不碰 ActiveDocument；只清当前页签对话轨 */
+      /* 铁律：清空对话绝不碰 ActiveDocument；只清当前页签对话轨与对应自动夹 */
+      if (window.GwProject && GwProject.clearAutoLane) {
+        try {
+          GwProject.clearAutoLane(state.tab === "suite" ? "suite" : "write");
+        } catch (eClr) {}
+      }
       if (state.tab === "suite") {
         state.chatSuite = [];
         state.options = [];
@@ -3713,6 +3492,7 @@
       } else {
         state.chatWrite = [];
         state.baseDraft = null;
+        state.writeLiveFrozen = false;
         state.taskCard = window.GwContextKernel
           ? GwContextKernel.emptyCard()
           : null;
