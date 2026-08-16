@@ -301,7 +301,8 @@
         "assistant_reasoning",
         "gather_only",
         "want_options",
-        "write_levels"
+        "write_levels",
+        "option_count"
       ].forEach(function (k) {
         if (extra[k] != null) body[k] = extra[k];
       });
@@ -370,6 +371,28 @@
     });
   }
 
+  function getUserProof() {
+    return ensureAccess().then(function (ok) {
+      if (!ok) {
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        return Promise.reject(err);
+      }
+      return request("GET", "/api/user/proof");
+    });
+  }
+
+  function mutateUserProof(body) {
+    return ensureAccess().then(function (ok) {
+      if (!ok) {
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        return Promise.reject(err);
+      }
+      return request("POST", "/api/user/proof", body || {});
+    });
+  }
+
   global.GwRelay = {
     KEYS: KEYS,
     baseUrl: baseUrl,
@@ -395,6 +418,8 @@
     getTemplate: getTemplate,
     listUserTemplates: listUserTemplates,
     getUserTemplate: getUserTemplate,
-    mutateUserTemplate: mutateUserTemplate
+    mutateUserTemplate: mutateUserTemplate,
+    getUserProof: getUserProof,
+    mutateUserProof: mutateUserProof
   };
 })(window);

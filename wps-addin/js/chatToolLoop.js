@@ -59,6 +59,7 @@
       : null;
     var wantOptions = !!opts.want_options;
     var writeLevels = Array.isArray(opts.write_levels) ? opts.write_levels : [];
+    var optionCount = Number(opts.option_count) || 0;
     var onStatus = typeof opts.onStatus === "function" ? opts.onStatus : function () {};
 
     if (!message) {
@@ -278,7 +279,8 @@
           doc_md: "",
           assistant_reasoning: state.lastReasoning || "",
           want_options: wantOptions,
-          write_levels: writeLevels
+          write_levels: writeLevels,
+          option_count: optionCount || undefined
         }
       ).then(function (json) {
         if (json && json.reasoning_content) {

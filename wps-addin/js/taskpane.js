@@ -7,6 +7,10 @@
     chatSuite: [],
     options: [],
     proof: [],
+    proofSnap: null,
+    proofActive: -1,
+    proofFollowTimer: null,
+    proofJumpUntil: 0,
     live: null,
     work: null,
     selPopOpen: false,
@@ -348,6 +352,34 @@
 
   var CHAT_STORE_KEY = "chat_snapshot_v1";
 
+  function slimWorkForStore(w) {
+    if (!w || !String(w.text || "").replace(/\s/g, "")) return null;
+    if (typeof w.start !== "number" || typeof w.end !== "number") return null;
+    var o = {
+      text: String(w.text).slice(0, 20000),
+      start: w.start,
+      end: w.end,
+      endsWithPara: !!w.endsWithPara
+    };
+    if (w.heading) o.heading = w.heading;
+    if (w.items && w.items.length) o.items = w.items.slice(0, 40);
+    return o;
+  }
+
+  function applyRestoredWork(data) {
+    var w = data && data.work;
+    if (!w || !String(w.text || "").replace(/\s/g, "")) return;
+    if (typeof w.start !== "number" || typeof w.end !== "number") return;
+    state.work = {
+      text: String(w.text),
+      start: w.start,
+      end: w.end,
+      heading: w.heading || null,
+      items: w.items || null,
+      endsWithPara: !!w.endsWithPara
+    };
+  }
+
   function slimChatForStore(list) {
     return (list || []).slice(-50).map(function (m) {
       var o = {
@@ -368,6 +400,7 @@
       if (m.pinBound) o.pinBound = true;
       if (typeof m.pinStart === "number") o.pinStart = m.pinStart;
       if (typeof m.pinEnd === "number") o.pinEnd = m.pinEnd;
+      if (m.adoptedId) o.adoptedId = m.adoptedId;
       if (m.suite) o.suite = true;
       if (m.suiteOptions && m.suiteOptions.length) {
         o.suiteOptions = m.suiteOptions.slice(0, 6).map(function (opt) {
@@ -417,6 +450,7 @@
         tab: state.tab,
         chatWrite: slimChatForStore(state.chatWrite),
         chatSuite: slimChatForStore(state.chatSuite),
+        work: slimWorkForStore(state.work),
         baseDraft: state.baseDraft || null,
         taskCard: state.taskCard || null,
         _clarifyAskedOnce: !!state._clarifyAskedOnce
@@ -442,6 +476,7 @@
         return false;
       }
       var data = JSON.parse(raw);
+      applyRestoredWork(data);
       var nextWrite = [];
       var nextSuite = [];
       if (Array.isArray(data.chatWrite) || Array.isArray(data.chatSuite)) {
@@ -623,6 +658,14 @@
     return out;
   }
 
+  function ensureDefaultWriteLevel() {
+    var box = $("aiWriteLevels");
+    if (!box) return;
+    if (box.querySelector("[data-write-level].on")) return;
+    var body = box.querySelector('[data-write-level="body"]');
+    if (body) body.classList.add("on");
+  }
+
   function writeLevelConstraint(levels) {
     var parts = [];
     var hasH1 = levels.indexOf("h1") >= 0;
@@ -659,19 +702,29 @@
     return "\n【钉住范围】\n" + t.slice(0, 6000);
   }
 
-  function buildWriteUserPacket(req, pin, inv) {
-    var parts = ["【要求】\n" + String(req || "").trim()];
+  function buildWriteUserPacket(req, pin, inv, historyBlock) {
+    var parts = [];
+    var hist = String(historyBlock || "").trim();
+    if (hist) parts.push(hist);
+    parts.push("【本轮要求】\n" + String(req || "").trim());
     var p = String(pin || "").trim();
     if (p.replace(/\s/g, "")) {
       var n = p.replace(/\s/g, "").length;
       if (p.length > 6000) {
         p = p.slice(0, 6000) + "\n（已截断，共约" + n + "字）";
       }
-      parts.push("【钉住】\n" + p);
+      parts.push("【本轮钉住】\n" + p);
     }
     var invT = String(inv || "").trim();
     if (invT) parts.push(invT);
     return parts.join("\n\n");
+  }
+
+  function pinHistoryBlock(list) {
+    if (!window.GwContextKernel || !GwContextKernel.formatPinHistory) return "";
+    return GwContextKernel.formatPinHistory(list || [], currentWorkPin(), 10, {
+      lastAdoptedId: state.adoptedId || ""
+    });
   }
 
   /** 上次若把形态话术灌进输入框，点选变更时清掉，改由发送时静默携带 */
@@ -830,6 +883,174 @@
     renderWorkChip();
   }
 
+  function nthBefore(snap, needle, pos) {
+    if (!needle) return 0;
+    var n = 0;
+    var idx = 0;
+    var chunk = String(snap || "").slice(0, Math.max(0, pos));
+    while (idx < chunk.length) {
+      var p = chunk.indexOf(needle, idx);
+      if (p < 0) break;
+      n += 1;
+      idx = p + 1;
+    }
+    return n;
+  }
+
+  function peerPos(snap, peer, origStart, origEnd) {
+    if (!peer) return -1;
+    var idx = 0;
+    var s = String(snap || "");
+    while (true) {
+      var p = s.indexOf(peer, idx);
+      if (p < 0) return -1;
+      if (p + peer.length <= origStart || p >= origEnd) return p;
+      idx = p + 1;
+    }
+  }
+
+  function stampProofItems(items, snap) {
+    snap = String(snap || "");
+    (items || []).forEach(function (it) {
+      var orig = String(it.original || "");
+      var a = Number(it.start);
+      if (!(a >= 0)) a = Math.max(0, snap.indexOf(orig));
+      it._nth = nthBefore(snap, orig, a);
+      var peer = String(it.peer || "");
+      if (peer) {
+        var pp = peerPos(snap, peer, a, Number(it.end) || a + orig.length);
+        it._peerStart = pp;
+        it._peerNth = pp < 0 ? 0 : nthBefore(snap, peer, pp);
+      }
+    });
+  }
+
+  function proofLocOpts(item, which) {
+    var snap = state.proofSnap || {};
+    var peer = which === "peer";
+    return {
+      original: peer ? item.peer : item.original,
+      start: peer ? item._peerStart : item.start,
+      end: peer
+        ? item._peerStart >= 0
+          ? item._peerStart + String(item.peer || "").length
+          : -1
+        : item.end,
+      nth: peer ? item._peerNth : item._nth,
+      baseStart: snap.baseStart,
+      snap: snap.text
+    };
+  }
+
+  function wipeProofMark() {
+    if (window.GwDoc && GwDoc.clearProofPaint) GwDoc.clearProofPaint();
+  }
+
+  function locateProofItem(item, which) {
+    if (!item || !window.GwDoc || !GwDoc.locateProofSpan) return;
+    GwDoc.locateProofSpan(proofLocOpts(item, which || "orig"));
+  }
+
+  function setProofActive(idx, opts) {
+    opts = opts || {};
+    if (idx < 0 || idx >= state.proof.length) return;
+    state.proofActive = idx;
+    var box = $("aiOpts");
+    if (!box) return;
+    var cards = box.querySelectorAll("[data-proof-i]");
+    Array.prototype.forEach.call(cards, function (el) {
+      el.classList.toggle("on", Number(el.getAttribute("data-proof-i")) === idx);
+    });
+    var on = box.querySelector('[data-proof-i="' + idx + '"]');
+    if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
+    updateProofSum();
+    if (opts.locate && !state.proof[idx]._applied) {
+      state.proofJumpUntil = Date.now() + 900;
+      try {
+        locateProofItem(state.proof[idx], opts.peer ? "peer" : "orig");
+      } catch (e) {
+        tip(e.message);
+      }
+    }
+  }
+
+  function stopProofFollow() {
+    if (state.proofFollowTimer) {
+      clearInterval(state.proofFollowTimer);
+      state.proofFollowTimer = null;
+    }
+  }
+
+  function hitProofInPara(pos) {
+    var best = -1;
+    var bestDist = 1e15;
+    state.proof.forEach(function (it, i) {
+      if (it._applied) return;
+      var spans = [[Number(it.start), Number(it.end)]];
+      if (it._peerStart >= 0) {
+        spans.push([
+          it._peerStart,
+          it._peerStart + String(it.peer || "").length
+        ]);
+      }
+      spans.forEach(function (sp) {
+        var a = sp[0];
+        var b = sp[1];
+        if (!(a >= 0 && b > a)) return;
+        if (b <= pos.paraStart || a >= pos.paraEnd) return;
+        var dist =
+          pos.rel >= a && pos.rel <= b
+            ? 0
+            : pos.rel < a
+              ? a - pos.rel
+              : pos.rel - b;
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      });
+    });
+    return best;
+  }
+
+  function startProofFollow() {
+    stopProofFollow();
+    if (state.tab !== "proof" || !state.proof.length) return;
+    state.proofFollowTimer = setInterval(function () {
+      if (state.tab !== "proof" || !state.proof.length) return;
+      if (Date.now() < (state.proofJumpUntil || 0)) return;
+      var snap = state.proofSnap;
+      if (!snap || !window.GwDoc || !GwDoc.proofFollowPos) return;
+      try {
+        var pos = GwDoc.proofFollowPos(Number(snap.baseStart || 0));
+        var hit = hitProofInPara(pos);
+        if (hit >= 0 && hit !== state.proofActive) setProofActive(hit, {});
+      } catch (eF) {}
+    }, 250);
+  }
+
+  function shiftProofAfter(at, delta, oldText, newText) {
+    var snap = state.proofSnap && state.proofSnap.text;
+    if (snap && at >= 0) {
+      var oldLen = String(oldText || "").length;
+      state.proofSnap.text =
+        snap.slice(0, at) + String(newText || "") + snap.slice(at + oldLen);
+    }
+    state.proof.forEach(function (it) {
+      if (it._applied) return;
+      var a = Number(it.start);
+      var b = Number(it.end);
+      if (a >= at) {
+        it.start = a + delta;
+        it.end = b + delta;
+      } else if (b > at) {
+        it.start = -1;
+        it.end = -1;
+      }
+      if (it._peerStart >= 0 && it._peerStart >= at) it._peerStart += delta;
+    });
+  }
+
   function toggleSelPop() {
     if (!state.work) return;
     setSelPop(!state.selPopOpen);
@@ -892,6 +1113,7 @@
       var m = list[i];
       if (m && m.role === "assistant" && m.suite) {
         m.suiteOptions = state.options.slice();
+        m.variants = state.options.slice();
         m.previewId = state.previewId || null;
         m.adoptedId = state.adoptedId || null;
         persistChat("suite_archive_pin");
@@ -1301,6 +1523,58 @@
     }
   }
 
+  function rebaseLastWritePin(start, end) {
+    var list = activeChat() || [];
+    var i;
+    for (i = list.length - 1; i >= 0; i--) {
+      if (list[i] && list[i].pinBound) {
+        list[i].pinStart = start;
+        list[i].pinEnd = end;
+        return;
+      }
+    }
+  }
+
+  /** 落稿后钉子跟到新范围，避免芯片变「未钉住」、下一轮丢【钉住】 */
+  function retargetWorkAfterWrite(md, startHint) {
+    var info = null;
+    try {
+      info = GwDoc.getSelectionInfo();
+    } catch (e) {}
+    var start =
+      typeof startHint === "number"
+        ? startHint
+        : info && typeof info.start === "number"
+          ? info.start
+          : null;
+    var end =
+      info && typeof info.end === "number"
+        ? info.end
+        : info && typeof info.start === "number"
+          ? info.start
+          : start;
+    var text = String(md || "");
+    if (!text.replace(/\s/g, "") && info) text = String(info.text || "");
+    if (!text.replace(/\s/g, "") || typeof start !== "number") return;
+    if (typeof end !== "number" || end <= start) {
+      if (state.work) state.work.text = text;
+      renderWorkChip();
+      persistChat("pin_retarget_text");
+      return;
+    }
+    if (!state.work) {
+      state.work = { heading: null, items: null, endsWithPara: false };
+    }
+    state.work.text = text;
+    state.work.start = start;
+    state.work.end = end;
+    if (info && info.heading) state.work.heading = info.heading;
+    if (info) state.work.endsWithPara = !!info.endsWithPara;
+    rebaseLastWritePin(start, end);
+    renderWorkChip();
+    persistChat("pin_retarget");
+  }
+
   function currentWorkPin() {
     if (
       state.work &&
@@ -1528,8 +1802,23 @@
             );
           }
           if (state.tab === "write") {
-            state.work = null;
-            renderWorkChip();
+            try {
+              var secAfter =
+                GwDoc.selectHeadingSection && GwDoc.selectHeadingSection();
+              if (secAfter && typeof secAfter.start === "number") {
+                state.work.start = secAfter.start;
+                state.work.end = secAfter.end;
+                state.work.text = secAfter.text || text;
+                state.work.endsWithPara = true;
+                rebaseLastWritePin(secAfter.start, secAfter.end);
+                renderWorkChip();
+                persistChat("pin_retarget");
+              } else {
+                retargetWorkAfterWrite(text, state.work.start);
+              }
+            } catch (eAfter) {
+              retargetWorkAfterWrite(text, state.work.start);
+            }
           }
         });
         return;
@@ -1566,8 +1855,7 @@
         endsWithPara: !!info.endsWithPara
       });
       if (state.tab === "write") {
-        state.work = null;
-        renderWorkChip();
+        retargetWorkAfterWrite(text, coverStart);
       }
     });
   }
@@ -1591,16 +1879,29 @@
     }
   }
 
+  function clearActivePinChat() {
+    if (state.tab === "suite") state.chatSuite = [];
+    else state.chatWrite = [];
+  }
+
+  function pinRangeChanged(snap) {
+    if (!state.work || !snap) return false;
+    if (typeof state.work.start !== "number" || typeof snap.start !== "number")
+      return true;
+    return state.work.start !== snap.start || state.work.end !== snap.end;
+  }
+
   /**
-   * 换钉前：若正文上叠着预览，先还原到出方案原文，再清方案。
-   * 对标旧版 clearAiSuiteState：新选定 = 旧建议作废。
+   * 换钉前：正文上若还叠着未采用的预览，先揭掉再清方案。
+   * 已采用的改动是定稿，换钉不得还原。
    */
   function resetSuiteForNewPin() {
     if (
       state.tab === "suite" &&
       state.work &&
       state.suiteBaseline &&
-      (state.previewId || state.adoptedId)
+      state.previewId &&
+      !state.adoptedId
     ) {
       try {
         writeWorkText(state.suiteBaseline);
@@ -1608,15 +1909,16 @@
         /* 锚点失效则仍清状态，避免旧方案挂在新钉子上 */
       }
     }
-    archiveSuiteOptionsToChat();
     clearSuiteSuggestions();
     syncRestoreBtn();
   }
 
   function setWorkFromSnapshot(snap, extras) {
     extras = extras || {};
+    var changed = pinRangeChanged(snap);
     /* 钉住即换工作选区：旧精修建议作废 */
     resetSuiteForNewPin();
+    if (changed) clearActivePinChat();
     state.work = {
       text: snap.text,
       start: snap.start,
@@ -1638,6 +1940,7 @@
         (state.tab === "suite" ? " · 可出方案" : "")
     );
     if (state.tab === "write") syncWriteLevelPrompt();
+    persistChat("pin");
     return state.work;
   }
 
@@ -1710,20 +2013,22 @@
     if (
       state.work &&
       state.suiteBaseline &&
-      (state.previewId || state.adoptedId)
+      state.previewId &&
+      !state.adoptedId
     ) {
       try {
         writeWorkText(state.suiteBaseline);
       } catch (e) {}
     }
     state.work = null;
-    archiveSuiteOptionsToChat();
+    clearActivePinChat();
     clearSuiteSuggestions();
     state.selPopOpen = false;
     syncRestoreBtn();
     renderWorkChip();
     renderOpts();
     if (state.tab === "write") syncWriteLevelPrompt();
+    persistChat("unpin");
     tip("已清除");
   }
 
@@ -1889,6 +2194,7 @@
       });
       state.work.start = rMulti.start;
       state.work.end = rMulti.end;
+      rebaseLastWritePin(rMulti.start, rMulti.end);
       renderWorkChip();
       syncRestoreBtn();
       return true;
@@ -1911,6 +2217,7 @@
     state.work.text = String(md || "");
     state.work.start = r.start;
     state.work.end = r.end;
+    rebaseLastWritePin(r.start, r.end);
     renderWorkChip();
     syncRestoreBtn();
     return true;
@@ -1948,6 +2255,17 @@
     }
   }
 
+  function stampAdoptedOnLastBubble(id) {
+    var list = activeChat() || [];
+    var i;
+    for (i = list.length - 1; i >= 0; i--) {
+      if (list[i] && list[i].role === "assistant" && list[i].variants && list[i].variants.length) {
+        list[i].adoptedId = id;
+        return;
+      }
+    }
+  }
+
   function adoptOpt(id) {
     if (!state.options.length) return;
     var opt = findOpt(id);
@@ -1970,6 +2288,8 @@
         state.adoptedId = id;
         state.previewId = null;
       }
+      stampAdoptedOnLastBubble(id);
+      persistChat("adopt");
       renderOpts();
       syncTabUi();
       tip(
@@ -2023,7 +2343,9 @@
       if (b) b.classList.toggle("on", tab === name);
     });
     $("aiProofBar").hidden = tab !== "proof";
-    $("aiCompose").hidden = tab === "proof";
+    var aside = $("aiAside");
+    if (aside) aside.classList.toggle("is-proof", tab === "proof");
+    if ($("aiCompose")) $("aiCompose").hidden = false;
     var levels = $("aiWriteLevels");
     if (levels) levels.hidden = tab !== "write";
     if (typeof syncWriteLevelPrompt === "function") syncWriteLevelPrompt();
@@ -2122,12 +2444,170 @@
     renderOpts();
   }
 
+  function proofKindLabel(item) {
+    if (item.type === "duplicate") {
+      var t = "内容重复";
+      if (item.path && item.peerPath) t += " · " + item.path + " ↔ " + item.peerPath;
+      return t;
+    }
+    return (
+      {
+        typo: "错字",
+        punctuation: "标点",
+        format: "格式",
+        grammar: "语法",
+        dictionary: "词库",
+        sensitive: "规范",
+        style: "文风",
+        logic: "逻辑",
+        dataverify: "数据"
+      }[item.type] ||
+      item.type ||
+      "问题"
+    );
+  }
+
+  function updateProofSum() {
+    var el = $("proofSum");
+    if (!el) return;
+    var n = (state.proof && state.proof.length) || 0;
+    if (state.tab !== "proof" || !n) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    var s = n + " 处 · 点条即定位";
+    if (state.proofActive >= 0) s += " · 当前第 " + (state.proofActive + 1) + " 条";
+    el.textContent = s;
+  }
+
+  function bindProofCard(div, item, idx) {
+    div.querySelector('[data-act="go"]').onclick = function (ev) {
+      ev.stopPropagation();
+      setProofActive(idx, { locate: true });
+    };
+    var peerBtn = div.querySelector('[data-act="goPeer"]');
+    if (peerBtn) {
+      peerBtn.onclick = function (ev) {
+        ev.stopPropagation();
+        setProofActive(idx, { locate: true, peer: true });
+      };
+    }
+    var fixBtn = div.querySelector('[data-act="fix"]');
+    if (fixBtn) {
+      if (item._applied) fixBtn.disabled = true;
+      fixBtn.onclick = function (ev) {
+        ev.stopPropagation();
+        if (item._applied) return;
+        try {
+          GwDoc.applyProofSpan(proofLocOpts(item, "orig"), item.suggestion);
+          wipeProofMark();
+          var at = Number(item.start);
+          item._applied = true;
+          shiftProofAfter(
+            at,
+            String(item.suggestion || "").length -
+              String(item.original || "").length,
+            item.original,
+            item.suggestion
+          );
+          stampProofItems(state.proof, state.proofSnap && state.proofSnap.text);
+          renderOpts();
+          setProofActive(idx, {});
+        } catch (e) {
+          tip(e.message);
+        }
+      };
+    }
+    var wlBtn = div.querySelector('[data-act="wl"]');
+    if (wlBtn) {
+      wlBtn.onclick = function (ev) {
+        ev.stopPropagation();
+        if (!window.GwProofIngest) return;
+        GwProofIngest.absorbIssue("whitelist", item)
+          .then(function () {
+            tip("已忽略");
+            wipeProofMark();
+            div.classList.add("ignored");
+          })
+          .catch(function (e) {
+            tip(e.message || "收入失败");
+          });
+      };
+    }
+    var mfBtn = div.querySelector('[data-act="mf"]');
+    if (mfBtn) {
+      mfBtn.onclick = function (ev) {
+        ev.stopPropagation();
+        if (!window.GwProofIngest) return;
+        GwProofIngest.absorbIssue("mustfix", item)
+          .then(function () {
+            tip("已收入必改");
+          })
+          .catch(function (e) {
+            tip(e.message || "收入失败");
+          });
+      };
+    }
+    div.onclick = function () {
+      setProofActive(idx, { locate: !item._applied });
+    };
+  }
+
+  function appendProofCard(box, item, idx) {
+    var isDup = item.type === "duplicate";
+    var explain = item.reason || (isDup ? item.suggestion || "" : "");
+    var div = document.createElement("div");
+    div.setAttribute("data-proof-i", String(idx));
+    div.className =
+      "ai-err" +
+      (isDup ? " ai-err-dup" : "") +
+      (idx === state.proofActive ? " on" : "") +
+      (item._applied ? " applied" : "");
+    div.innerHTML =
+      '<div class="ai-err-type"></div>' +
+      (isDup
+        ? '<div class="ai-err-verdict"><div class="ai-err-dup-a"></div>' +
+          (item.peer ? '<div class="ai-err-dup-b"></div>' : "") +
+          "</div>"
+        : '<div class="ai-err-verdict"><del></del><span class="ai-err-arrow">→</span><ins></ins></div>') +
+      (explain ? '<div class="ai-err-reason"></div>' : "") +
+      '<div class="ai-err-acts">' +
+      (isDup
+        ? '<button type="button" data-act="go">定位</button>' +
+          (item.peer
+            ? '<button type="button" data-act="goPeer">另处</button>'
+            : "")
+        : '<button type="button" class="primary" data-act="fix">采纳</button>' +
+          '<button type="button" data-act="wl">忽略</button>' +
+          '<button type="button" class="ai-linkish" data-act="mf">必须改</button>' +
+          '<button type="button" class="ai-err-go" data-act="go">定位</button>') +
+      "</div>";
+    div.querySelector(".ai-err-type").textContent = proofKindLabel(item);
+    if (explain) div.querySelector(".ai-err-reason").textContent = explain;
+    if (isDup) {
+      div.querySelector(".ai-err-dup-a").textContent =
+        "此处：" + (item.original || "");
+      if (item.peer) {
+        div.querySelector(".ai-err-dup-b").textContent = "另处：" + item.peer;
+      }
+    } else {
+      div.querySelector("del").textContent = item.original || "";
+      div.querySelector("ins").textContent = item.suggestion || "";
+    }
+    bindProofCard(div, item, idx);
+    box.appendChild(div);
+  }
+
   function renderOpts() {
     var box = $("aiOpts");
     if (!box) return;
     box.innerHTML = "";
+    if (state.tab !== "proof") updateProofSum();
     if (state.tab === "proof") {
       if (!state.proof.length) {
+        updateProofSum();
         box.innerHTML =
           '<div class="ai-empty">点上方「开始校对」；结果点条目可定位。<br/>' +
           '<button type="button" class="ai-linkish" id="proofEmptySet">检查项（含内容重复）→ 设置</button></div>';
@@ -2140,90 +2620,9 @@
         return;
       }
       state.proof.forEach(function (item, idx) {
-        var isDup = item.type === "duplicate";
-        var div = document.createElement("div");
-        div.className = "ai-err" + (isDup ? " ai-err-dup" : "");
-        var title;
-        if (isDup) {
-          title = "内容重复";
-          if (item.path && item.peerPath) {
-            title += " · " + item.path + " ↔ " + item.peerPath;
-          }
-          if (item.reason) title += " · " + item.reason;
-        } else {
-          title = item.reason || item.type || "问题";
-        }
-        div.innerHTML =
-          '<div class="ai-err-type"></div>' +
-          (isDup
-            ? '<div class="ai-err-body"><div class="ai-err-dup-a"></div>' +
-              (item.peer ? '<div class="ai-err-dup-b"></div>' : "") +
-              '<div class="ai-err-hint"></div></div>'
-            : '<div class="ai-err-body"><del></del><ins></ins></div>') +
-          '<div class="ai-err-acts">' +
-          '<button type="button" data-act="go">定位</button>' +
-          (isDup && item.peer
-            ? '<button type="button" data-act="goPeer">另处</button>'
-            : "") +
-          (isDup
-            ? ""
-            : '<button type="button" data-act="fix">采纳</button>') +
-          "</div>";
-        div.querySelector(".ai-err-type").textContent =
-          "#" + (idx + 1) + " " + title;
-        if (isDup) {
-          div.querySelector(".ai-err-dup-a").textContent =
-            "此处：" + (item.original || "");
-          if (item.peer) {
-            div.querySelector(".ai-err-dup-b").textContent =
-              "另处：" + item.peer;
-          }
-          div.querySelector(".ai-err-hint").textContent =
-            item.suggestion || "建议删除本处或与另一处合并";
-        } else {
-          div.querySelector("del").textContent = item.original || "";
-          div.querySelector("ins").textContent = item.suggestion || "";
-        }
-        div.querySelector('[data-act="go"]').onclick = function (ev) {
-          ev.stopPropagation();
-          try {
-            GwDoc.findAndHighlight(item.original);
-          } catch (e) {
-            tip(e.message);
-          }
-        };
-        var peerBtn = div.querySelector('[data-act="goPeer"]');
-        if (peerBtn) {
-          peerBtn.onclick = function (ev) {
-            ev.stopPropagation();
-            try {
-              GwDoc.findAndHighlight(item.peer);
-            } catch (e) {
-              tip(e.message);
-            }
-          };
-        }
-        var fixBtn = div.querySelector('[data-act="fix"]');
-        if (fixBtn) {
-          fixBtn.onclick = function (ev) {
-            ev.stopPropagation();
-            try {
-              GwDoc.applySuggestion(item.original, item.suggestion);
-              div.classList.add("applied");
-            } catch (e) {
-              tip(e.message);
-            }
-          };
-        }
-        div.onclick = function () {
-          try {
-            GwDoc.findAndHighlight(item.original);
-          } catch (e) {
-            tip(e.message);
-          }
-        };
-        box.appendChild(div);
+        appendProofCard(box, item, idx);
       });
+      updateProofSum();
       return;
     }
 
@@ -2585,15 +2984,12 @@
   }
 
   /** 发给中转的近期对话（软修剪） */
-  function chatHistoryForRelay() {
+  function chatHistoryForRelay(list) {
+    var raw = list || writeChat() || [];
     if (window.GwContextKernel && GwContextKernel.pruneHistory) {
-      return GwContextKernel.pruneHistory(
-        writeChat() || [],
-        10,
-        currentWorkPin()
-      );
+      return GwContextKernel.pruneHistory(raw, 10, currentWorkPin());
     }
-    return (writeChat() || [])
+    return raw
       .slice(-16)
       .map(function (m) {
         return {
@@ -2652,7 +3048,7 @@
     var assembled = { block: "", trace: {} };
     var pinText = workText();
     var docMd = currentDocMd();
-    var hist = chatHistoryForRelay();
+    var hist = [];
     var matCount = 0;
     try {
       if (window.GwMaterialIndex && GwMaterialIndex.workspaceForAi) {
@@ -2681,7 +3077,12 @@
       pin: pinText || "",
       doc_full: docMd || ""
     };
-    var sendMsg = buildWriteUserPacket(displayMsg, pinText, assembled.block);
+    var sendMsg = buildWriteUserPacket(
+      displayMsg,
+      pinText,
+      assembled.block,
+      pinHistoryBlock(writeChat())
+    );
     withLogin(function () {
       setBusy(true);
       tipProgress(allow ? "撰写中…" : "聊天中…");
@@ -2975,7 +3376,7 @@
     var citeMats = citedMaterials();
     withLogin(function () {
       setBusy(true);
-      setBusyPhase("精修·读取本地素材…");
+      setBusyPhase("精修中…");
       hideReadBar();
       var autoSv = captureTurnAutoVersion();
       if (!autoSv.ok) {
@@ -3001,62 +3402,90 @@
           ? siblingTexts.slice()
           : null;
       syncRestoreBtn();
+      var pinText = workText();
+      var docMd = "";
+      try {
+        docMd = GwDoc.getDocumentText() || "";
+      } catch (eDoc) {}
+      var matCount = 0;
+      try {
+        if (window.GwMaterialIndex && GwMaterialIndex.workspaceForAi) {
+          var wsInv = GwMaterialIndex.workspaceForAi() || {};
+          matCount = (wsInv.materials && wsInv.materials.length) || 0;
+        }
+      } catch (eInv) {}
+      var assembled = { block: "" };
+      if (window.GwContextKernel && GwContextKernel.buildContextInventory) {
+        assembled = GwContextKernel.buildContextInventory({
+          displayMsg: req,
+          pinText: pinText,
+          pinChars: String(pinText || "").replace(/\s/g, "").length,
+          docChars: String(docMd || "").replace(/\s/g, "").length,
+          matCount: matCount
+        });
+      }
+      var sendMsg = buildWriteUserPacket(
+        req,
+        pinText,
+        assembled.block,
+        pinHistoryBlock(suiteChat())
+      );
+      var hist = [];
+      var suiteN =
+        (window.GwSettings && GwSettings.suiteCount
+          ? GwSettings.suiteCount()
+          : 3) || 3;
       /* 发送即入轨，避免长请求期间切页/换钉后「对话像没了」 */
       state.chatSuite.push({ role: "user", text: req, suite: true });
       persistChat("suite_user");
       if (state.tab === "suite") renderOpts();
-      var prep =
-        window.GwChatLoop && GwChatLoop.prepareSuggestMaterials
-          ? GwChatLoop.prepareSuggestMaterials(req, citeMats, {
-              contextMd: workText(),
-              doc_md: siblingTexts ? siblingTexts.join("\n") : workText()
+      var runner =
+        window.GwChatLoop && GwChatLoop.runChat
+          ? GwChatLoop.runChat({
+              message: sendMsg,
+              contextMd: "",
+              doc_md: "",
+              capability: capabilitySuite(),
+              talkCapability: capabilityWriteTalk(),
+              finalCapability: capabilitySuite(),
+              allowEdit: true,
+              materials: citeMats,
+              history: hist,
+              session_summary: "",
+              read_set: (state.readSet || []).slice(),
+              contextBag: {
+                pin: pinText || "",
+                doc_full: docMd || ""
+              },
+              want_options: true,
+              option_count: suiteN,
+              onStatus: function (s) {
+                var t = String(s || "");
+                if (/索引|同步|准备素材|工程目录/.test(t))
+                  tipProgress("正在准备材料…");
+                else if (
+                  /执行|read_file|list_files|search|fetch_context|查阅|准备材料/.test(
+                    t
+                  )
+                )
+                  tipProgress("正在准备材料…");
+                else if (/终稿|打包|增强|作答/.test(t))
+                  tipProgress("精修出方案中…");
+                else tipProgress("精修中…");
+              }
             })
-          : Promise.resolve(citeMats || []);
-      return prep
-        .then(function (readyMats) {
-          var mats = readyMats || [];
-          if (mats.length) {
-            setBusyPhase("已精读 " + mats.length + " 篇素材 · 增强出方案");
-            logInfo("suite.materials", {
-              n: mats.length,
-              paths: mats.map(function (m) {
-                return m.path;
-              })
+          : GwRelay.chat(sendMsg, "", capabilitySuite(), true, citeMats, {
+              history: hist,
+              want_options: true,
+              option_count: suiteN,
+              read_set: (state.readSet || []).slice()
+            }).then(function (data) {
+              return {
+                reply: (data && data.reply) || "(空回复)",
+                options: data && data.options
+              };
             });
-          } else {
-            setBusyPhase("未读到素材 · 仅据钉住原文改写（禁编造）");
-            logWarn("suite.materials.empty", { reqLen: req.length });
-          }
-          var ws =
-            window.GwMaterialIndex && GwMaterialIndex.workspaceForAi
-              ? GwMaterialIndex.workspaceForAi()
-              : null;
-          var reqModel = req;
-          if (!/硬性·精修/.test(reqModel)) {
-            reqModel +=
-              "\n\n【硬性·精修】必须按用户意见改写选区；要求落实在正文，禁止只在短评里声称已改；" +
-              "若要求加入或补充，正文须真正加入；若要求更简洁，正文须明显缩短。禁止只换近义词。";
-          }
-          return GwRelay.suggest(
-            workText(),
-            reqModel,
-            capabilitySuite(),
-            mats.length ? mats : null,
-            {
-              tab: "suite",
-              workspace: ws,
-              read_set: mats.map(function (m) {
-                return m.path;
-              }),
-              items:
-                siblingTexts && siblingTexts.length >= 2 ? siblingTexts : null,
-              count:
-                (window.GwSettings && GwSettings.suiteCount
-                  ? GwSettings.suiteCount()
-                  : 3) || 3
-            }
-          );
-        })
+      return runner
         .then(function (data) {
           state.previewId = null;
           state.adoptedId = null;
@@ -3084,8 +3513,15 @@
           archiveSuiteOptionsToChat();
           state.writeLiveFrozen = false;
           state.options = normalizeOptions((data && data.options) || []);
+          if (!state.options.length) {
+            state.options = extractWriteVariants(
+              data,
+              (data && data.reply) || "",
+              ""
+            );
+          }
           /* 必须写入 chatSuite：请求返回时用户可能已切到撰写，activeChat() 会写错轨 */
-          state.chatSuite.push({
+          var bubble = {
             role: "assistant",
             text:
               "已出 " +
@@ -3096,8 +3532,11 @@
                 : ""),
             suite: true,
             suiteOptions: state.options.slice(),
+            variants: state.options.slice(),
             autoVersionRel: state.pendingTurnAutoRel || ""
-          });
+          };
+          bindBubblePin(bubble);
+          state.chatSuite.push(bubble);
           persistChat("suite_ok");
           renderOpts();
           syncTabUi();
@@ -3158,23 +3597,26 @@
       (document.querySelector('input[name="proofScope"]:checked') || {})
         .value || "full";
     var text = "";
+    var baseStart = 0;
     try {
       if (scope === "selection") {
-        if (!workText().replace(/\s/g, "")) {
-          commitLiveToWork({ alert: true });
-        }
-        text = workText() || liveText() || GwDoc.getSelectionText();
+        text = GwDoc.getSelectionText();
+        var info = GwDoc.getSelectionInfo();
+        baseStart = Number(info && info.start) || 0;
       } else {
         text = GwDoc.getDocumentText();
+        baseStart = GwDoc.contentStart ? GwDoc.contentStart() : 0;
       }
     } catch (e) {
       alert(e.message);
       return;
     }
     if (!String(text).replace(/\s/g, "")) {
-      alert(scope === "selection" ? "请先划选并钉住" : "文档为空");
+      alert(scope === "selection" ? "请先划选要校对的正文" : "文档为空");
       return;
     }
+    stopProofFollow();
+    wipeProofMark();
     withLogin(function () {
       setBusy(true);
       tip("校对中…");
@@ -3220,6 +3662,7 @@
         window.GwSettings && GwSettings.proofFacts
           ? GwSettings.proofFacts()
           : [];
+      if (window.GwProofIngest) GwProofIngest.hidePanel();
       return GwRelay.proofread(text, engines, {
         sensitivity: sens,
         whitelist: wl,
@@ -3229,7 +3672,15 @@
         .then(function (data) {
           state.proof =
             (data && (data.results || (data.data && data.data.results))) || [];
+          state.proofSnap = {
+            text: String(text),
+            baseStart: baseStart,
+            scope: scope
+          };
+          stampProofItems(state.proof, state.proofSnap.text);
+          state.proofActive = state.proof.length ? 0 : -1;
           renderOpts();
+          startProofFollow();
           tip("发现 " + state.proof.length + " 处");
         })
         .catch(function (e) {
@@ -3242,15 +3693,31 @@
         })
         .then(function () {
           setBusy(false);
+          if (state.tab === "proof" && state.proof.length) {
+            state.proofJumpUntil = Date.now() + 900;
+            try {
+              locateProofItem(state.proof[0], "orig");
+            } catch (eLoc) {
+              tip(eLoc.message);
+            }
+          }
         });
     }).catch(function () {});
   }
 
   function switchTab(tab) {
     var prev = state.tab;
+    if (prev === "proof" && tab !== "proof") {
+      stopProofFollow();
+      wipeProofMark();
+    }
     state.tab = tab;
     if (tab === "proof") {
+      stopProofFollow();
+      wipeProofMark();
       state.proof = [];
+      state.proofSnap = null;
+      state.proofActive = -1;
     }
     if (tab === "suite" || tab === "write") {
       rehomeMisplacedSuiteMessages();
@@ -3297,6 +3764,7 @@
     } catch (eRestore) {
       logWarn("chat.restore.crash", String(eRestore && eRestore.message));
     }
+    ensureDefaultWriteLevel();
     syncTabUi();
     startLiveWatch();
 
@@ -3310,7 +3778,8 @@
     setInterval(function () {
       if (
         (state.chatWrite && state.chatWrite.length) ||
-        (state.chatSuite && state.chatSuite.length)
+        (state.chatSuite && state.chatSuite.length) ||
+        workText().replace(/\s/g, "")
       )
         persistChat("interval");
     }, 8000);
@@ -3527,6 +3996,7 @@
       });
     }
     $("proofRun").onclick = runProof;
+    if (window.GwProofIngest) GwProofIngest.init();
     var proofSet = $("proofOpenSet");
     if (proofSet) {
       proofSet.onclick = function () {
@@ -3534,8 +4004,13 @@
       };
     }
     $("proofClear").onclick = function () {
+      stopProofFollow();
+      wipeProofMark();
       state.proof = [];
+      state.proofSnap = null;
+      state.proofActive = -1;
       $("proofClear").disabled = true;
+      if (window.GwProofIngest) GwProofIngest.hidePanel();
       renderOpts();
     };
     var citeBar = $("aiCiteBar");

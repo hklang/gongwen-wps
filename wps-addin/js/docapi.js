@@ -213,6 +213,10 @@
     return cleanText(doc().Content.Text);
   }
 
+  function contentStart() {
+    return doc().Content.Start;
+  }
+
   /**
    * 整篇写入 —— 危险：会剥掉样式/节/域。
    * 仅允许在「已存版本 + 用户确认整篇排版写入」后调用；商品路径优先 writeDocumentStyled。
@@ -743,15 +747,260 @@
     return null;
   }
 
+  /** 选中正文。WPS 侧栏点击后靠 Selection.Range.Select 重绘；Activate 放后面会冲掉选区。 */
   function selectRange(start, end) {
-    var s = selection();
-    s.SetRange(start, end);
+    var a = Number(start);
+    var b = Number(end);
+    if (!(b >= a)) b = a;
+    var d = doc();
+    try {
+      d.Range(a, b).Select();
+    } catch (e1) {}
+    try {
+      app().Selection.SetRange(a, b);
+    } catch (e2) {}
+    try {
+      var rgSel = app().Selection.Range;
+      if (rgSel && rgSel.Select) rgSel.Select();
+    } catch (e3) {}
+    try {
+      var w = d.ActiveWindow;
+      if (w && w.ScrollIntoView) w.ScrollIntoView(d.Range(a, b), true);
+    } catch (e4) {}
   }
 
-  /** 仅 SetRange，不改高亮/格式（选中态只在侧栏展示） */
+  function nthIndex(hay, needle, nth) {
+    if (!needle) return -1;
+    var from = 0;
+    var want = Number(nth) || 0;
+    var i = 0;
+    while (true) {
+      var p = String(hay).indexOf(needle, from);
+      if (p < 0) return -1;
+      if (i === want) return p;
+      from = p + 1;
+      i += 1;
+    }
+  }
+
+  function needleWordRange(needle, nth, baseStart) {
+    var n = String(needle || "").replace(/\n/g, "\r");
+    if (!n.replace(/\s/g, "")) return null;
+    var d = doc();
+    var origin = baseStart != null ? Number(baseStart) : d.Content.Start;
+    var hay = "";
+    try {
+      hay = String(d.Range(origin, d.Content.End).Text || "");
+    } catch (e0) {
+      hay = String(d.Content.Text || "");
+      origin = d.Content.Start;
+    }
+    var hit = nthIndex(hay, n, nth);
+    if (hit < 0) {
+      hit = nthIndex(hay.replace(/\r/g, "\n"), n.replace(/\r/g, "\n"), nth);
+    }
+    if (hit < 0) return null;
+    return { start: origin + hit, end: origin + hit + n.length };
+  }
+
+  var WD_NO_HIGHLIGHT = 0;
+  var WD_YELLOW = 7;
+  var SHADE_YELLOW = 13434879;
+  var proofMark = null;
+
+  function highlightVal(v) {
+    v = Number(v);
+    if (!(v >= 0 && v <= 16)) return WD_NO_HIGHLIGHT;
+    return v;
+  }
+
+  function readShade(rg) {
+    try {
+      return rg.Shading.BackgroundPatternColor;
+    } catch (e1) {
+      try {
+        return rg.Font.Shading.BackgroundPatternColor;
+      } catch (e2) {
+        return 0;
+      }
+    }
+  }
+
+  function writeShade(rg, color) {
+    try {
+      rg.Shading.BackgroundPatternColor = color;
+    } catch (e1) {
+      try {
+        rg.Font.Shading.BackgroundPatternColor = color;
+      } catch (e2) {}
+    }
+  }
+
+  function clearProofPaint() {
+    if (!proofMark) return;
+    try {
+      var rg = doc().Range(proofMark.start, proofMark.end);
+      try {
+        rg.HighlightColorIndex = proofMark.prevHl;
+      } catch (eH) {}
+      writeShade(rg, proofMark.prevSh);
+    } catch (e) {}
+    proofMark = null;
+  }
+
+  function rangeTextOf(start, end) {
+    try {
+      return String(doc().Range(start, end).Text || "");
+    } catch (e) {
+      return "";
+    }
+  }
+
+  function clampToNeedle(start, needle) {
+    var want = String(needle || "").replace(/\s/g, "");
+    if (!want) return null;
+    var d = doc();
+    var a = Number(start);
+    var b = a;
+    var cap = a + Math.min(Math.max(want.length + 24, 16), 240);
+    try {
+      if (cap > d.Content.End) cap = d.Content.End;
+    } catch (eC) {}
+    while (b < cap) {
+      b += 1;
+      var got = rangeTextOf(a, b).replace(/\s/g, "");
+      if (!got) continue;
+      if (got === want || (got.length >= 2 && want.indexOf(got) === 0 && got.length >= want.length)) {
+        return { start: a, end: b };
+      }
+      if (got.length > want.length + 2) {
+        a += 1;
+        if (a >= b) break;
+      }
+    }
+    return null;
+  }
+
+  function tightRange(est, needle) {
+    var n = String(needle || "");
+    var a = Number(est && est.start);
+    var b = Number(est && est.end);
+    var want = n.replace(/\s/g, "");
+    var cap = Math.min(Math.max(want.length + 16, 24), 240);
+    var got = rangeTextOf(a, b).replace(/\s/g, "");
+    if (b > a && got && got.length <= want.length + 4 && (got === want || want.indexOf(got) >= 0 || got.indexOf(want) >= 0)) {
+      if (b - a <= cap) return { start: a, end: b };
+    }
+    return clampToNeedle(a, n) || clampToNeedle(a - 2, n);
+  }
+
+  function markProofSpan(start, end, expect) {
+    var t = tightRange({ start: start, end: end }, expect);
+    if (!t) throw new Error("未定位到该处");
+    start = t.start;
+    end = t.end;
+    clearProofPaint();
+    var rg = doc().Range(start, end);
+    var prevHl = WD_NO_HIGHLIGHT;
+    var prevSh = 0;
+    try {
+      prevHl = highlightVal(rg.HighlightColorIndex);
+    } catch (e0) {}
+    try {
+      prevSh = readShade(rg);
+    } catch (e1) {}
+    try {
+      rg.HighlightColorIndex = WD_YELLOW;
+    } catch (e2) {}
+    writeShade(rg, SHADE_YELLOW);
+    proofMark = { start: start, end: end, prevHl: prevHl, prevSh: prevSh };
+    try {
+      doc().ActiveWindow.ScrollIntoView(rg, true);
+    } catch (e3) {}
+  }
+
+  /** 只给 Find 命中处打浅黄。超长则收到原文长度，绝不刷到文末。 */
+  function markFindHit(needle) {
+    var s = selection();
+    var a = Number(s.Start);
+    var b = Number(s.End);
+    if (!(b > a)) return;
+    while (b > a) {
+      var tail = String(doc().Range(a, b).Text || "");
+      var ch = tail.charAt(tail.length - 1);
+      if (ch === "\r" || ch === "\n") b -= 1;
+      else break;
+    }
+    var want = String(needle || "")
+      .replace(/\r/g, "")
+      .replace(/\n/g, "")
+      .trim()
+      .slice(0, 80);
+    var cap = Math.min(Math.max(want.length, 8), 80);
+    if (b - a > cap + 24) {
+      var end = a;
+      var limit = a + cap + 24;
+      try {
+        if (limit > doc().Content.End) limit = doc().Content.End;
+      } catch (eL) {}
+      if (limit > b) limit = b;
+      while (end < limit) {
+        end += 1;
+        var t = String(doc().Range(a, end).Text || "")
+          .replace(/\r/g, "")
+          .replace(/\n/g, "");
+        if (want && t.length >= want.length) break;
+      }
+      b = end;
+    }
+    if (!(b > a) || b - a > 120) return;
+    clearProofPaint();
+    var rg = doc().Range(a, b);
+    var prevHl = WD_NO_HIGHLIGHT;
+    try {
+      prevHl = highlightVal(rg.HighlightColorIndex);
+    } catch (e0) {}
+    try {
+      rg.HighlightColorIndex = WD_YELLOW;
+    } catch (e2) {}
+    proofMark = { start: a, end: b, prevHl: prevHl, prevSh: 0 };
+    try {
+      doc().ActiveWindow.ScrollIntoView(rg, true);
+    } catch (e3) {}
+  }
+
+  /** 文档 Range 坐标 → 与 getDocumentText 同一套字符串长度（校对跟选区用） */
+  function rangeTextLen(start, end) {
+    start = Number(start);
+    end = Number(end);
+    if (!(end > start)) return 0;
+    try {
+      return cleanText(doc().Range(start, end).Text).length;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  /** 选中 Range，不改高亮/格式 */
   function highlightRange(start, end) {
     var c = shrinkToContentRange(start, end);
     selectRange(c.start, c.end);
+  }
+
+  function proofFollowPos(base) {
+    base = Number(base) || 0;
+    var s = selection();
+    var caret = Number(s.Start);
+    var end = Number(s.End);
+    if (end > caret) caret = Math.round((caret + end) / 2);
+    var p = doc().Range(caret, caret).Paragraphs.Item(1).Range;
+    var ps = Number(p.Start);
+    var pe = Number(p.End);
+    return {
+      rel: caret > base ? rangeTextLen(base, caret) : 0,
+      paraStart: ps > base ? rangeTextLen(base, ps) : 0,
+      paraEnd: pe > base ? rangeTextLen(base, pe) : 0
+    };
   }
 
   function clearPaint() {
@@ -1064,6 +1313,14 @@
     return selectHeadingLineByIndex(paraIndex);
   }
 
+  function findNeedle(s) {
+    return String(s || "")
+      .replace(/\r/g, "\n")
+      .split("\n")[0]
+      .trim()
+      .slice(0, 80);
+  }
+
   function findAndHighlight(needle) {
     var n = String(needle || "").replace(/\r/g, "").trim();
     if (!n) throw new Error("无定位原文");
@@ -1081,9 +1338,90 @@
         throw new Error("Find 失败: " + e2);
       }
     }
-    if (!hit) throw new Error("未找到: " + n.slice(0, 40));
-    /* 只定位选区，不涂色改格式 */
+    if (!hit) {
+      var got = String(s.Text || "").replace(/\r/g, "");
+      if (!(got && n && got.indexOf(n.slice(0, Math.min(n.length, 4))) >= 0)) {
+        throw new Error("未找到: " + n.slice(0, 40));
+      }
+    }
     return true;
+  }
+
+  function findNth(needle, nth) {
+    var want = Number(nth) || 0;
+    if (want <= 0) {
+      findAndHighlight(needle);
+      return true;
+    }
+    var n = String(needle || "").replace(/\r/g, "").trim();
+    if (!n) throw new Error("无定位原文");
+    n = n.slice(0, 80);
+    var s = selection();
+    s.HomeKey(6);
+    var i = 0;
+    while (i <= want) {
+      var hit = false;
+      try {
+        hit = s.Find.Execute(n);
+      } catch (e1) {
+        try {
+          s.Find.Text = n;
+          hit = s.Find.Execute();
+        } catch (e2) {
+          throw new Error("Find 失败: " + e2);
+        }
+      }
+      if (!hit) throw new Error("未找到: " + n.slice(0, 40));
+      if (i === want) return true;
+      try {
+        s.Collapse(0);
+      } catch (eC) {}
+      i += 1;
+    }
+    return true;
+  }
+
+  function proofFindProbe(original, snap, start) {
+    var o = String(original || "").replace(/\r/g, "\n");
+    if (o.replace(/\s/g, "").length <= 40) return o;
+    snap = String(snap || "");
+    start = Number(start);
+    if (snap && start >= 0) {
+      var a = Math.max(0, start - 12);
+      var b = Math.min(snap.length, start + Math.min(o.length, 40) + 12);
+      var slice = snap.slice(a, b);
+      if (slice.replace(/\s/g, "").length >= 8) return slice;
+    }
+    var mid = Math.floor(o.length / 3);
+    return o.slice(mid, mid + 40);
+  }
+
+  function countBefore(hay, needle, pos) {
+    if (!needle) return 0;
+    var n = 0;
+    var idx = 0;
+    var chunk = String(hay || "").slice(0, Math.max(0, pos));
+    while (idx < chunk.length) {
+      var p = chunk.indexOf(needle, idx);
+      if (p < 0) break;
+      n += 1;
+      idx = p + 1;
+    }
+    return n;
+  }
+
+  function locateProofSpan(opts) {
+    opts = opts || {};
+    clearProofPaint();
+    findNth(opts.original, Number(opts.nth) || 0);
+    markFindHit(opts.original);
+    return { start: selection().Start, end: selection().End };
+  }
+
+  function applyProofSpan(opts, suggestion) {
+    clearProofPaint();
+    findNth(opts.original, Number(opts.nth) || 0);
+    selection().Text = String(suggestion == null ? "" : suggestion);
   }
 
   function applySuggestion(original, suggestion) {
@@ -1094,12 +1432,16 @@
   global.GwDoc = {
     getSelectionText: getSelectionText,
     getSelectionInfo: getSelectionInfo,
+    rangeTextLen: rangeTextLen,
+    proofFollowPos: proofFollowPos,
     selectRange: selectRange,
     clearPaint: clearPaint,
+    clearProofPaint: clearProofPaint,
     highlightRange: highlightRange,
     replaceSelection: replaceSelection,
     replaceRange: replaceRange,
     getDocumentText: getDocumentText,
+    contentStart: contentStart,
     setDocumentText: setDocumentText,
     insertAtCursor: insertAtCursor,
     writeDocumentStyled: writeDocumentStyled,
@@ -1119,6 +1461,8 @@
     selectHeadingBlockByIndex: selectHeadingBlockByIndex,
     headingInfo: headingInfo,
     findAndHighlight: findAndHighlight,
+    locateProofSpan: locateProofSpan,
+    applyProofSpan: applyProofSpan,
     applySuggestion: applySuggestion
   };
 })(window);

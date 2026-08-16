@@ -28,7 +28,7 @@ _CHAT_ALLOW_KEYS = frozenset({
     "project_memory", "force_final", "capability",
     "category_code", "category", "template_path",
     "materials", "assistant_reasoning", "gather_only",
-    "want_options", "write_levels",
+    "want_options", "write_levels", "option_count",
 })
 
 logging.basicConfig(
@@ -333,6 +333,17 @@ class Handler(BaseHTTPRequestHandler):
                         self._json(control_user_tpl.get_user_template(uid, int(tid)))
                     else:
                         self._json(control_user_tpl.list_user_templates(uid))
+                except ValueError as e:
+                    self._json({"error": str(e)}, 400)
+                return
+            if url.path == "/api/user/proof":
+                if ctx.get("mode") != "user":
+                    self._json({"error": "请先登录账号"}, 401)
+                    return
+                import control_user_proof
+                try:
+                    uid = int(ctx["access"]["uid"])
+                    self._json(control_user_proof.list_user_proof(uid))
                 except ValueError as e:
                     self._json({"error": str(e)}, 400)
                 return
@@ -664,6 +675,40 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"error": str(e)}, 500)
             return
 
+        if url.path == "/api/user/proof":
+            if ctx.get("mode") != "user":
+                self._json({"error": "请先登录账号"}, 401)
+                return
+            import control_user_proof
+            try:
+                uid = int(ctx["access"]["uid"])
+                op = str(body.get("op") or body.get("action") or "").lower()
+                provider = model = None
+                if op == "extract_facts":
+                    api = "proofread"
+                    cap, provider, model = _apply_route(api, body, ctx)
+                    err = _gate_user(ctx, api, body, cap)
+                    if err:
+                        self._json({"error": err}, 402)
+                        return
+                    t0 = time.time()
+                    try:
+                        r = control_user_proof.handle_post(
+                            uid, body, provider=provider, model=model
+                        )
+                        _record(ctx, api, cap, body, True, t0)
+                        self._json(r)
+                    except Exception:
+                        _record(ctx, api, cap, body, False, t0)
+                        raise
+                    return
+                self._json(control_user_proof.handle_post(uid, body))
+            except ValueError as e:
+                self._json({"error": str(e)}, 400)
+            except Exception as e:
+                self._json({"error": str(e)}, 500)
+            return
+
         try:
             import suggest
             if url.path == "/api/suggest":
@@ -756,6 +801,7 @@ class Handler(BaseHTTPRequestHandler):
                         gather_only=False,
                         want_options=safe.get("want_options"),
                         write_levels=safe.get("write_levels") if isinstance(safe.get("write_levels"), list) else [],
+                        option_count=safe.get("option_count"),
                     )
                     if isinstance(r, dict):
                         r.pop("model", None)
@@ -788,6 +834,17 @@ class Handler(BaseHTTPRequestHandler):
                 facts = body.get("facts")
                 if not isinstance(facts, list):
                     facts = None
+                if ctx.get("mode") == "user":
+                    try:
+                        import control_user_proof
+                        pack = control_user_proof.pack_for_proofread(
+                            int(ctx["access"]["uid"])
+                        )
+                        wl = pack["whitelist"]
+                        mf = pack["mustfix"]
+                        facts = pack["facts"]
+                    except Exception:
+                        log.exception("user_proof pack")
                 try:
                     r = pr.proofread(
                         text=body.get("text") or body.get("md") or "",

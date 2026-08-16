@@ -8,9 +8,10 @@
   <script type="text/javascript" src="../js/gwlog.js"></script>
   <script type="text/javascript" src="../js/userPrefs.js"></script>
   <script type="text/javascript" src="../js/followHost.js"></script>
-  <script type="text/javascript" src="../js/docapi.js"></script>
+  <script type="text/javascript" src="../js/docapi.js?v=20260816i"></script>
   <script type="text/javascript" src="../js/relay.js"></script>
   <script type="text/javascript" src="../js/account.js"></script>
+  <script type="text/javascript" src="../js/proofIngest.js"></script>
   <script type="text/javascript" src="../js/settingsStore.js"></script>
   <script type="text/javascript" src="../js/settingsOpen.js"></script>
   <script type="text/javascript" src="../js/cloudTemplatesOpen.js"></script>
@@ -20,7 +21,7 @@
   <script type="text/javascript" src="../js/chatToolLoop.js"></script>
   <script type="text/javascript" src="../js/contextKernel.js"></script>
   <script type="text/javascript" src="../js/qualityKernel.js"></script>
-  <script type="text/javascript" src="../js/taskpane.js"></script>
+  <script type="text/javascript" src="../js/taskpane.js?v=20260816i"></script>
   <script type="text/javascript">
     /* TaskPane 停靠：原生跟主窗，勿关窗重开 */
     if (window.GwUserPrefs) GwUserPrefs.watchWindow("assistant", { docked: true });
@@ -45,8 +46,18 @@
       </div>
       <div class="ai-proof-actions">
         <button type="button" class="primary" id="proofRun">开始校对</button>
+        <span class="ai-proof-ingest" id="proofIngestWrap">
+          <button type="button" id="proofIngest">收入</button>
+          <div class="ai-proof-ingest-menu" id="proofIngestMenu" hidden>
+            <button type="button" data-ingest="whitelist">别再报这些</button>
+            <button type="button" data-ingest="mustfix">这种错必须改</button>
+            <button type="button" data-ingest="facts">收到数字表</button>
+          </div>
+        </span>
         <button type="button" id="proofClear" disabled>清空</button>
       </div>
+      <div class="ai-proof-sum" id="proofSum" hidden></div>
+      <div id="proofIngestPanel" class="ai-proof-ingest-panel" hidden></div>
     </div>
 
     <div class="ai-opts" id="aiOpts">
@@ -86,7 +97,7 @@
         <button type="button" class="ai-level" data-write-level="h1" title="一级标题">一级标题</button>
         <button type="button" class="ai-level" data-write-level="h2" title="二级标题">二级标题</button>
         <button type="button" class="ai-level" data-write-level="h3" title="三级标题">三级标题</button>
-        <button type="button" class="ai-level" data-write-level="body" title="标题下正文">正文</button>
+        <button type="button" class="ai-level on" data-write-level="body" title="标题下正文">正文</button>
       </div>
       <div class="ai-suite-presets" id="aiSuitePresets" hidden>
         <button type="button" data-suite-preset="请按现有标题充填事实与表述。写数、写事须以「素材」及已引用文件为依据；表述详略可参考「模板」。无依据处标「待核实」，禁止编造数字、单位与结论。">充填</button>

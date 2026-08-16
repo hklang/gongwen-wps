@@ -376,9 +376,21 @@
     tip("已退出登录");
   }
 
-  /** 发 AI 前：测试模式直接放行；否则再弹登录 */
+  /** 发 AI 前：已登录账号则跟账号；否则测试模式用运维票；再否则弹登录 */
   function requireLogin() {
     ensureBase();
+    var em = (GwRelay.tokens().email || "");
+    if (em.indexOf("@") >= 0) {
+      return GwRelay.ensureAccess().then(function (ok) {
+        refreshButton();
+        if (ok && GwRelay.tokens().access) return true;
+        openModal({ forceForm: true, mode: "login" });
+        tip("请先登录账号");
+        var err = new Error("请先登录账号");
+        err.status = 401;
+        throw err;
+      });
+    }
     if (DEBUG.AUTO_BYPASS_QUOTA && applyLegacyBypass()) {
       refreshButton();
       return Promise.resolve(true);

@@ -123,6 +123,40 @@ CREATE TABLE IF NOT EXISTS user_templates (
 CREATE INDEX IF NOT EXISTS idx_user_templates_uid
   ON user_templates(user_id, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS user_proof_whitelist (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  word TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  UNIQUE(user_id, word)
+);
+CREATE INDEX IF NOT EXISTS idx_user_proof_wl_uid
+  ON user_proof_whitelist(user_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS user_proof_mustfix (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  wrong TEXT NOT NULL,
+  right TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  UNIQUE(user_id, wrong)
+);
+CREATE INDEX IF NOT EXISTS idx_user_proof_mf_uid
+  ON user_proof_mustfix(user_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS user_proof_facts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  label TEXT NOT NULL,
+  value TEXT NOT NULL,
+  unit TEXT NOT NULL DEFAULT '',
+  aliases TEXT NOT NULL DEFAULT '',
+  created_at REAL NOT NULL,
+  UNIQUE(user_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_user_proof_facts_uid
+  ON user_proof_facts(user_id, id DESC);
+
 CREATE TABLE IF NOT EXISTS playbooks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,

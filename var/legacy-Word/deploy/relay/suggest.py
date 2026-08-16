@@ -2,7 +2,6 @@
 """人机双写：按选中 md + 要求，调用 MiniMax 或 DeepSeek 生成方案/对话。"""
 from __future__ import annotations
 
-import difflib
 import importlib
 import json
 import logging
@@ -232,7 +231,7 @@ _MATERIAL_TOOL_DEFS = [
             "name": "fetch_context",
             "description": (
                 "按点名取宿主上下文：doc_full 当前完整正文。"
-                "本轮【钉住】已附原文则不必再取 pin。"
+                "【本轮钉住】已附原文则不必再取 pin。"
             ),
             "parameters": {
                 "type": "object",
@@ -976,10 +975,11 @@ def _materials_block(materials) -> str:
     if not parts:
         return ""
     return (
-        "【已引用素材正文——写稿必须优先采用其中的项目名、时间、数字与事实；"
+        "【已引用素材——数字、专名、事实以此为准，禁止编造。"
+        "素材供对照取据；替换稿写什么只跟本轮用户要求走，"
+        "要求没让写入的，不要把原文没有的内容写进去。"
         "素材已有内容禁止用 XX / 某某 / 【待核实】空壳顶替；"
-        "仅当素材确无对应依据时才可标【待核实】或不写数字；"
-        "无对应处仍须按用户意见做可感知改写，不得编造素材没有的数字/项目名】\n"
+        "仅当素材确无对应依据时才可标【待核实】或不写数字】\n"
         + "\n\n".join(parts)
         + "\n"
     )
@@ -1048,10 +1048,7 @@ def _build_messages_single(
         )
     user += (
         f"待替换的原文 md 片段：\n{md}\n\n"
-        "输出前自检：每一套 md 必须落实上面的「要求」；"
-        "若要求含加入/补充/添加，正文须比原文明显更长，且能看出所加内容；"
-        "若要求含简洁/删繁/精简，正文须明显短于原文；"
-        "去掉空白后不得与原文九成相似；若自检未落实，请立刻改写后再输出 JSON。"
+        "输出前自检：每一套 md 必须落实上面的「要求」。"
     )
     return [
         {"role": "system", "content": system},
@@ -1362,7 +1359,7 @@ def _parse_chat_edit_response(text: str) -> dict:
 
 _TOOL_RULES_NATIVE = (
     "【还有什么】里未附的正文，缺则 fetch_context / list_files / read_file，够了再出稿。"
-    "fetch_context 主要取 doc_full；【钉住】已附原文则不必再 fetch pin。"
+    "fetch_context 主要取 doc_full；【本轮钉住】已附原文则不必再 fetch pin。"
     "禁止编造未取到的内容；不要空转重复同一路径。"
 )
 _TOOL_RULES_TEXT = (
@@ -1380,20 +1377,13 @@ def _hash_rule_from_levels(levels) -> str:
     lv = [str(x) for x in (levels or []) if str(x) in _LEVEL_OK]
     if not lv:
         return ""
-    bits = []
-    if "h1" in lv:
-        bits.append("一级=# 文题 + ## 一、")
-    if "h2" in lv:
-        bits.append("二级=### （一）")
-    if "h3" in lv:
-        bits.append("三级=####")
-    if "body" in lv and not ("h1" in lv or "h2" in lv or "h3" in lv):
-        bits.append("正文=不要标题井号")
-    elif "body" in lv:
-        bits.append("正文=段落")
-    if not bits:
-        return ""
-    return "井号跟点选走（本轮：" + "；".join(bits) + "）。"
+    names = {"h1": "一级", "h2": "二级", "h3": "三级", "body": "正文"}
+    shown = "、".join(names[x] for x in lv if x in names)
+    return (
+        "本轮点选层级："
+        + shown
+        + "。落稿用井号区分层级（# 文题，## 一级，### 二级，#### 三级）。"
+    )
 
 
 def _packet_system(
@@ -1402,20 +1392,37 @@ def _packet_system(
     want_options: bool,
     hash_line: str,
     tool_rules: str,
+    option_count: int = 0,
 ) -> str:
     head = (
-        f"你是机关{role}。本轮以【要求】为准；【钉住】是用户划定的原文，用不用、怎么用由你判断。"
-        "【钉住】已附原文则不必再 fetch pin。"
+        f"你是机关{role}。本轮以【本轮要求】为准。"
+        "有【本轮钉住】则它是工作面：出稿 md 是这一段的替换稿，不是全文。"
+        "【历史】只是经过，不是本轮命令。"
+        "全文/素材只对照取据，不进 md。"
+        "@引用是证据不是落稿面。多份=同一段的不同写法。"
+        "无钉住才可按要求写更大范围。"
+        "【本轮钉住】已附原文则不必再 fetch pin。"
         + tool_rules
         + "无出处标【待核实】。禁止声称已写入。"
     )
     fence = "最终只输出一个 JSON 对象，禁止 markdown 代码围栏。"
+    n = 0
+    try:
+        n = int(option_count or 0)
+    except (TypeError, ValueError):
+        n = 0
+    nline = (
+        ("options 须为 " + str(n) + " 组；")
+        if 2 <= n <= 6
+        else "options 2～6 组；"
+    )
     if want_options:
         return (
             head
             + fence
             + '{"reply":"一两句","edit":null,"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"}]}'
-            "options 2～6 组；edit 必须为 null。"
+            + nline
+            + "edit 必须为 null。"
             + (hash_line or "")
         )
     if allow_edit:
@@ -1451,6 +1458,7 @@ def chat(
     gather_only: bool = False,
     want_options: bool | None = None,
     write_levels=None,
+    option_count=None,
 ) -> dict:
     """对话：返回 {ok, reply, edit?}。edit 仅 allow_edit 时可能有，由前端确认后写盘。
     也可返回 tool_calls（宿主本机执行后再请求）。"""
@@ -1476,6 +1484,7 @@ def chat(
             "gather_only": False,
             "want_options": bool(want_options) if want_options is not None else None,
             "write_levels": write_levels or [],
+            "option_count": option_count,
         })
         # 中转常回「结论」散文：本机再兜底一次改名/搭架
         if allow_edit and isinstance(r, dict) and not r.get("error"):
@@ -1538,13 +1547,8 @@ def chat(
         else (_TOOL_RULES_NATIVE if use_native_tools else _TOOL_RULES_TEXT)
     )
     system = _packet_system(
-        role, allow_edit, want_options, hash_line, tool_rules
+        role, allow_edit, want_options, hash_line, tool_rules, option_count or 0
     )
-    if mats_block:
-        system += (
-            "用户消息含【已引用素材正文】时：必须写入素材中的具体项目名与数字；"
-            "禁止用 XX/某某顶替已有事实。"
-        )
     messages = [{"role": "system", "content": system}]
     for turn in (history or [])[-12:]:
         if not isinstance(turn, dict):
@@ -1616,12 +1620,11 @@ def chat(
                 {
                     "role": "user",
                     "content": (
-                        "上轮未给出合法 options。请立刻只输出一个 JSON 对象（禁止代码围栏、禁止只在 reply 描述）："
+                        "上轮未给出合法 options。请立刻只输出一个 JSON 对象（禁止代码围栏）："
                         '{"reply":"一两句","edit":null,'
                         '"options":[{"id":"A","note":"差异一句","md":"可落稿Markdown"},'
                         '{"id":"B","note":"…","md":"…"},{"id":"C","note":"…","md":"…"}]}'
-                        "硬性：options 至少 2 组；md 必须含点选层级对应井号标题行；"
-                        "若用户本轮要求改架构/条目形态，按本轮要求出，勿锁死旧底稿结构。"
+                        "options 至少 2 组。md 是【本轮钉住】的整段替换稿（无钉住则按【本轮要求】）。"
                     ),
                 },
             ]
@@ -1692,41 +1695,11 @@ def _opt_body_text(o: dict) -> str:
     return str(o.get("md") or "")
 
 
-def _req_kind(req: str) -> str:
-    r = req or ""
-    if re.search(r"加入|增加|加上|补充|添加|插入", r):
-        return "add"
-    if re.search(r"简洁|删繁|精简|压缩|缩短|简短", r):
-        return "short"
-    return "rewrite"
-
-
-def _too_similar(src: str, body: str) -> bool:
-    a = _norm_opt_md(src)
-    b = _norm_opt_md(body)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.90
-
-
 def _options_unfulfilled(opts: list, src: str, req: str) -> bool:
-    """方案未落实用户要求：过像原文 / 该加不加 / 该短不短 / 各套雷同。"""
+    """只拦空结果或各套正文完全相同（不按关键词猜加长/缩短）。"""
     if not opts:
         return True
-    bodies = [_opt_body_text(o) for o in opts]
-    kind = _req_kind(req)
-    src_len = len(_norm_opt_md(src))
-    for b in bodies:
-        if _too_similar(src, b):
-            return True
-        n = len(_norm_opt_md(b))
-        if kind == "add" and n < src_len + 8:
-            return True
-        if kind == "short" and n > max(8, int(src_len * 0.92)):
-            return True
-    norms = [_norm_opt_md(b) for b in bodies]
+    norms = [_norm_opt_md(_opt_body_text(o)) for o in opts]
     return len(norms) >= 2 and len(set(norms)) == 1
 
 
@@ -1774,19 +1747,11 @@ def generate_options(
     }
 
     def _retry_req(req: str) -> str:
-        kind = _req_kind(req)
-        extra = {
-            "add": "本轮是加入/补充：每套必须写出新增内容，正文须比原文更长，禁止只换近义词。",
-            "short": "本轮是删繁就简：每套必须明显短于原文，禁止只换近义词。",
-            "rewrite": "本轮须有可感知改写，禁止与原文九成相同。",
-        }[kind]
         return (
             str(req or "").strip()
-            + "\n\n【系统重试】上一轮未落实用户要求，不合格。请重新给出 "
+            + "\n\n【系统重试】上一轮各套正文相同。请重新给出 "
             + str(n)
-            + " 套。"
-            "用户要求必须写进每套 md，禁止只写在 note 里。"
-            + extra
+            + " 套，落实用户要求。"
         )
 
     if len(item_list) >= 2:

@@ -138,16 +138,14 @@
       .trim();
   }
 
-  /** 软修剪：失败轮丢弃；助手默认只留口语。同钉住才把最近一次卡片全文附上。 */
-  var CARD_HISTORY_BUDGET = 8000;
-
+  /** 软修剪：失败轮丢弃。本钉住下每轮出卡都收成「情况」，不附稿、不当命令。 */
   function historyPin(pin) {
     if (!pin || typeof pin.start !== "number" || typeof pin.end !== "number")
       return null;
     return { start: pin.start, end: pin.end };
   }
 
-  function samePinForCards(cur, msg) {
+  function samePin(cur, msg) {
     if (!cur) return true;
     if (!msg || !msg.pinBound) return true;
     if (typeof msg.pinStart !== "number" || typeof msg.pinEnd !== "number")
@@ -155,77 +153,106 @@
     return cur.start === msg.pinStart && cur.end === msg.pinEnd;
   }
 
-  function lastVariantsIndex(raw) {
+  function lastUserIndexBefore(raw, idx) {
     var i;
-    for (i = raw.length - 1; i >= 0; i--) {
-      if (
-        raw[i] &&
-        raw[i].role === "assistant" &&
-        raw[i].variants &&
-        raw[i].variants.length
-      )
-        return i;
+    for (i = idx - 1; i >= 0; i--) {
+      if (raw[i] && raw[i].role === "user") return i;
     }
     return -1;
   }
 
-  function formatHistoryCards(variants) {
-    var budget = CARD_HISTORY_BUDGET;
-    var parts = [];
+  function formatRoundLine(userMsg, variants, adoptedId) {
+    var said = stripHostMeta((userMsg && userMsg.text) || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (said.length > 80) said = said.slice(0, 80) + "…";
+    said = said.replace(/[。．.！？!?]+$/, "");
+    var sizes = [];
+    var notes = [];
     var i;
     for (i = 0; i < (variants || []).length && i < 6; i++) {
       var v = variants[i] || {};
-      var id = String(v.id || String.fromCharCode(65 + i));
-      var note = String(v.note || "").trim();
-      var md = String(v.md || "");
-      var block = "【" + id + "】" + (note ? " " + note : "") + "\n" + md;
-      if (block.length > budget) {
-        parts.push(block.slice(0, Math.max(0, budget)) + "\n（truncated）");
-        break;
-      }
-      parts.push(block);
-      budget -= block.length + 2;
-      if (budget <= 0) break;
+      var n = String(v.md || "").replace(/\s/g, "").length;
+      sizes.push(n + "字");
+      var note = String(v.note || "").replace(/\s+/g, " ").trim();
+      if (note.length > 24) note = note.slice(0, 24) + "…";
+      notes.push((v.id || String.fromCharCode(65 + i)) + (note ? "「" + note + "」" : ""));
     }
-    return parts.join("\n\n");
+    var bits = [];
+    if (said) bits.push("你说「" + said + "」。");
+    if (sizes.length) {
+      bits.push("出了 " + sizes.length + " 案（约 " + sizes.join(" / ") + "）。");
+    }
+    if (notes.length) bits.push("差异：" + notes.join("、") + "。");
+    if (adoptedId) {
+      bits.push("已采用" + adoptedId + "，本轮钉住即该稿。");
+    }
+    return bits.join("");
   }
 
-  function pruneHistory(chat, limit, pin) {
+  /** 本钉住下各轮收成一块【历史】，不附稿。无历史则空串。 */
+  function formatPinHistory(chat, pin, limit, extras) {
     limit = limit || 10;
-    var raw = (chat || []).slice();
+    extras = extras || {};
+    var raw = chat || [];
     var cur = historyPin(pin);
-    var keepCardsAt = lastVariantsIndex(raw);
-    var out = [];
+    var rounds = [];
     var i;
+    var u;
     for (i = 0; i < raw.length; i++) {
-      var m = raw[i];
-      if (!m) continue;
-      var text = stripHostMeta(m.text || "");
-      if (m.role === "assistant") {
-        if (/失败：|模型未给出|空壳|中转不可用/.test(text)) continue;
-        if (m.variants && m.variants.length) {
-          text = text.split("\n")[0].slice(0, 180);
-          if (!String(text || "").replace(/\s/g, "")) {
-            text = "已出 " + m.variants.length + " 组参考。";
-          }
-          if (i === keepCardsAt && samePinForCards(cur, m)) {
-            var cards = formatHistoryCards(m.variants);
-            if (cards) text += "\n\n" + cards;
-          }
-        } else {
-          text = text.slice(0, 1200);
-        }
-      } else {
-        text = text.slice(0, 2500);
-      }
-      if (!String(text || "").replace(/\s/g, "")) continue;
-      out.push({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: text
+      var a = raw[i];
+      if (!a || a.role !== "assistant" || !a.variants || !a.variants.length)
+        continue;
+      if (!samePin(cur, a)) continue;
+      u = lastUserIndexBefore(raw, i);
+      rounds.push({
+        user: u >= 0 ? raw[u] : null,
+        variants: a.variants,
+        adoptedId: a.adoptedId || ""
       });
     }
-    if (out.length > limit) out = out.slice(-limit);
-    return out;
+    if (rounds.length > limit) rounds = rounds.slice(-limit);
+    if (!rounds.length) return "";
+    if (extras.lastAdoptedId && !rounds[rounds.length - 1].adoptedId) {
+      rounds[rounds.length - 1].adoptedId = extras.lastAdoptedId;
+    }
+    var total = rounds.length;
+    var nums = [];
+    for (i = 1; i <= total; i++) nums.push(String(i));
+    var head =
+      "【历史" +
+      nums.join("、") +
+      "】1=最远；" +
+      total +
+      "=上一轮。数字越大距离本轮对话越近。";
+    return (
+      head +
+      "\n" +
+      rounds
+        .map(function (r, n) {
+          var ago = total - 1 - n;
+          var tag =
+            total === 1 || ago === 0
+              ? "上一轮"
+              : n === 0
+                ? "最远"
+                : "距今" + ago + "轮";
+          return (
+            n +
+            1 +
+            ". " +
+            tag +
+            "：" +
+            formatRoundLine(r.user, r.variants, r.adoptedId)
+          );
+        })
+        .join("\n")
+    );
+  }
+
+  /** 近轮已进本轮【历史】，messages 不再另带旧轮，避免当成命令。 */
+  function pruneHistory() {
+    return [];
   }
 
   function buildBaseLayer(intent, baseMd, hasPin) {
@@ -386,6 +413,7 @@
     inferDraftKind: inferDraftKind,
     classify: classify,
     pruneHistory: pruneHistory,
+    formatPinHistory: formatPinHistory,
     stripHostMeta: stripHostMeta,
     assembleWriteLayers: assembleWriteLayers,
     buildContextInventory: buildContextInventory,
