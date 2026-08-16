@@ -943,7 +943,9 @@
   }
 
   function wipeProofMark() {
-    if (window.GwDoc && GwDoc.clearProofPaint) GwDoc.clearProofPaint();
+    if (!window.GwDoc) return;
+    if (GwDoc.clearProofPaint) GwDoc.clearProofPaint();
+    if (GwDoc.scrubProofDirt) GwDoc.scrubProofDirt();
   }
 
   function locateProofItem(item, which) {
@@ -3737,6 +3739,9 @@
       base: (window.GwRelay && GwRelay.baseUrl && GwRelay.baseUrl()) || ""
     });
     ensureBase();
+    try {
+      wipeProofMark();
+    } catch (eWipe) {}
     setBusy(false);
     state.pendingClarify = null;
     if (window.GwSettingsUI) GwSettingsUI.init();
@@ -3770,9 +3775,15 @@
 
     window.addEventListener("beforeunload", function () {
       persistChat("beforeunload");
+      try {
+        wipeProofMark();
+      } catch (eU) {}
     });
     window.addEventListener("pagehide", function () {
       persistChat("pagehide");
+      try {
+        wipeProofMark();
+      } catch (eP) {}
     });
     /* 定时落盘，防最小化关窗来不及写 beforeunload */
     setInterval(function () {

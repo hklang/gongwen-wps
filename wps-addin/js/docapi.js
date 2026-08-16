@@ -806,46 +806,97 @@
   var WD_NO_HIGHLIGHT = 0;
   var WD_YELLOW = 7;
   var SHADE_YELLOW = 13434879;
-  var proofMark = null;
+  var WD_COLOR_AUTO = -16777216;
+  var WD_UNDEFINED = 9999999;
+  var proofMarks = [];
 
-  function highlightVal(v) {
+  function shadeIsDirt(v) {
     v = Number(v);
-    if (!(v >= 0 && v <= 16)) return WD_NO_HIGHLIGHT;
-    return v;
+    return v === 0 || v === SHADE_YELLOW;
   }
 
-  function readShade(rg) {
+  function scrubRangeDirt(rg) {
     try {
-      return rg.Shading.BackgroundPatternColor;
-    } catch (e1) {
+      var h = Number(rg.HighlightColorIndex);
+      if (h === WD_YELLOW) rg.HighlightColorIndex = WD_NO_HIGHLIGHT;
+    } catch (eH) {}
+    try {
+      if (shadeIsDirt(rg.Shading.BackgroundPatternColor)) {
+        rg.Shading.BackgroundPatternColor = WD_COLOR_AUTO;
+      }
+    } catch (eS) {}
+    try {
+      if (shadeIsDirt(rg.Font.Shading.BackgroundPatternColor)) {
+        rg.Font.Shading.BackgroundPatternColor = WD_COLOR_AUTO;
+      }
+    } catch (eF) {}
+  }
+
+  function restoreMark(m) {
+    if (!m) return;
+    try {
+      var rg = doc().Range(m.start, m.end);
       try {
-        return rg.Font.Shading.BackgroundPatternColor;
-      } catch (e2) {
-        return 0;
+        rg.HighlightColorIndex =
+          m.prevHl == null ? WD_NO_HIGHLIGHT : m.prevHl;
+      } catch (eH) {}
+      scrubRangeDirt(rg);
+    } catch (e) {}
+  }
+
+  /** 清校对误写的黄高亮 / 黑底纹。关窗经常跑不到，打开时也要扫一遍。 */
+  function scrubProofDirt() {
+    var d = doc();
+    var paras = d.Paragraphs;
+    var n = Number(paras.Count) || 0;
+    var i;
+    for (i = 1; i <= n; i++) {
+      var p;
+      try {
+        p = paras.Item(i).Range;
+      } catch (eP) {
+        continue;
+      }
+      var mixed = false;
+      try {
+        var h = Number(p.HighlightColorIndex);
+        if (h === WD_YELLOW) p.HighlightColorIndex = WD_NO_HIGHLIGHT;
+        else if (h === WD_UNDEFINED || h < 0) mixed = true;
+      } catch (eH) {
+        mixed = true;
+      }
+      try {
+        var s = Number(p.Font.Shading.BackgroundPatternColor);
+        if (shadeIsDirt(s)) p.Font.Shading.BackgroundPatternColor = WD_COLOR_AUTO;
+        else if (s === WD_UNDEFINED) mixed = true;
+      } catch (eS) {
+        mixed = true;
+      }
+      scrubRangeDirt(p);
+      if (!mixed) continue;
+      var words;
+      try {
+        words = p.Words;
+      } catch (eW) {
+        continue;
+      }
+      var wc = Number(words.Count) || 0;
+      var k;
+      for (k = 1; k <= wc; k++) {
+        try {
+          scrubRangeDirt(words.Item(k));
+        } catch (eK) {}
       }
     }
   }
 
-  function writeShade(rg, color) {
-    try {
-      rg.Shading.BackgroundPatternColor = color;
-    } catch (e1) {
-      try {
-        rg.Font.Shading.BackgroundPatternColor = color;
-      } catch (e2) {}
-    }
-  }
-
   function clearProofPaint() {
-    if (!proofMark) return;
+    var i;
+    for (i = 0; i < proofMarks.length; i++) restoreMark(proofMarks[i]);
+    proofMarks = [];
     try {
-      var rg = doc().Range(proofMark.start, proofMark.end);
-      try {
-        rg.HighlightColorIndex = proofMark.prevHl;
-      } catch (eH) {}
-      writeShade(rg, proofMark.prevSh);
-    } catch (e) {}
-    proofMark = null;
+      scrubProofDirt();
+    } catch (eScrub) {}
   }
 
   function rangeTextOf(start, end) {
@@ -894,78 +945,10 @@
     return clampToNeedle(a, n) || clampToNeedle(a - 2, n);
   }
 
-  function markProofSpan(start, end, expect) {
-    var t = tightRange({ start: start, end: end }, expect);
-    if (!t) throw new Error("未定位到该处");
-    start = t.start;
-    end = t.end;
-    clearProofPaint();
-    var rg = doc().Range(start, end);
-    var prevHl = WD_NO_HIGHLIGHT;
-    var prevSh = 0;
+  /** 只滚动到 Find 命中处，不改高亮/底纹（改格式关窗清不掉）。 */
+  function revealFindHit() {
     try {
-      prevHl = highlightVal(rg.HighlightColorIndex);
-    } catch (e0) {}
-    try {
-      prevSh = readShade(rg);
-    } catch (e1) {}
-    try {
-      rg.HighlightColorIndex = WD_YELLOW;
-    } catch (e2) {}
-    writeShade(rg, SHADE_YELLOW);
-    proofMark = { start: start, end: end, prevHl: prevHl, prevSh: prevSh };
-    try {
-      doc().ActiveWindow.ScrollIntoView(rg, true);
-    } catch (e3) {}
-  }
-
-  /** 只给 Find 命中处打浅黄。超长则收到原文长度，绝不刷到文末。 */
-  function markFindHit(needle) {
-    var s = selection();
-    var a = Number(s.Start);
-    var b = Number(s.End);
-    if (!(b > a)) return;
-    while (b > a) {
-      var tail = String(doc().Range(a, b).Text || "");
-      var ch = tail.charAt(tail.length - 1);
-      if (ch === "\r" || ch === "\n") b -= 1;
-      else break;
-    }
-    var want = String(needle || "")
-      .replace(/\r/g, "")
-      .replace(/\n/g, "")
-      .trim()
-      .slice(0, 80);
-    var cap = Math.min(Math.max(want.length, 8), 80);
-    if (b - a > cap + 24) {
-      var end = a;
-      var limit = a + cap + 24;
-      try {
-        if (limit > doc().Content.End) limit = doc().Content.End;
-      } catch (eL) {}
-      if (limit > b) limit = b;
-      while (end < limit) {
-        end += 1;
-        var t = String(doc().Range(a, end).Text || "")
-          .replace(/\r/g, "")
-          .replace(/\n/g, "");
-        if (want && t.length >= want.length) break;
-      }
-      b = end;
-    }
-    if (!(b > a) || b - a > 120) return;
-    clearProofPaint();
-    var rg = doc().Range(a, b);
-    var prevHl = WD_NO_HIGHLIGHT;
-    try {
-      prevHl = highlightVal(rg.HighlightColorIndex);
-    } catch (e0) {}
-    try {
-      rg.HighlightColorIndex = WD_YELLOW;
-    } catch (e2) {}
-    proofMark = { start: a, end: b, prevHl: prevHl, prevSh: 0 };
-    try {
-      doc().ActiveWindow.ScrollIntoView(rg, true);
+      doc().ActiveWindow.ScrollIntoView(selection().Range, true);
     } catch (e3) {}
   }
 
@@ -1412,9 +1395,8 @@
 
   function locateProofSpan(opts) {
     opts = opts || {};
-    clearProofPaint();
     findNth(opts.original, Number(opts.nth) || 0);
-    markFindHit(opts.original);
+    revealFindHit();
     return { start: selection().Start, end: selection().End };
   }
 
@@ -1437,6 +1419,7 @@
     selectRange: selectRange,
     clearPaint: clearPaint,
     clearProofPaint: clearProofPaint,
+    scrubProofDirt: scrubProofDirt,
     highlightRange: highlightRange,
     replaceSelection: replaceSelection,
     replaceRange: replaceRange,
