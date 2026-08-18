@@ -834,6 +834,11 @@ class Handler(BaseHTTPRequestHandler):
                 facts = body.get("facts")
                 if not isinstance(facts, list):
                     facts = None
+                industry_on = (
+                    True
+                    if "industryPack" not in body
+                    else bool(body.get("industryPack"))
+                )
                 if ctx.get("mode") == "user":
                     try:
                         import control_user_proof
@@ -853,6 +858,7 @@ class Handler(BaseHTTPRequestHandler):
                         whitelist=wl,
                         mustfix=mf,
                         facts=facts,
+                        industry_pack=industry_on,
                         provider=provider,
                         model=model,
                     )

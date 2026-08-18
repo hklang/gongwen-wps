@@ -4,6 +4,8 @@
 (function (global) {
   var draft = null;
   var pane = "general";
+  var dictTab = "wl";
+  var cloudProof = null;
 
   var SCENE_META = [
     { id: "政务公文", tip: "公文格式、政治规范、内容重复等" },
@@ -20,7 +22,7 @@
     sensitive: "政治规范",
     style: "文风",
     logic: "前后矛盾",
-    dataverify: "对照账号数字表",
+    dataverify: "对照已收录口径",
     duplicate: "跨段同事项"
   };
 
@@ -170,7 +172,12 @@
       '<div class="gw-set-row"><span class="gw-set-label">打开校对时</span>' +
       '<select id="gwScope"><option value="full">全文</option>' +
       '<option value="selection">选区</option></select></div>' +
-      '<p class="gw-set-hint">当次仍可在校对条改选区/全文。</p></div>';
+      '<p class="gw-set-hint">当次仍可在校对条改选区/全文。</p></div>' +
+      '<div class="gw-set-block"><h4>行业易错包</h4>' +
+      '<label class="gw-set-check"><input type="checkbox" id="gwIndustryPack"' +
+      (draft.proof.industryPack !== false ? " checked" : "") +
+      " /> 使用行业易错包</label>" +
+      '<p class="gw-set-hint">政务通用易错，默认开。关掉后只走你的词库。</p></div>';
 
     var sc = $("gwScene");
     sc.innerHTML = SCENE_META.map(function (s) {
@@ -216,6 +223,9 @@
     $("gwScope").onchange = function () {
       draft.proof.defaultScope = $("gwScope").value;
     };
+    $("gwIndustryPack").onchange = function () {
+      draft.proof.industryPack = $("gwIndustryPack").checked;
+    };
   }
 
   function ensureRelayBase() {
@@ -252,67 +262,120 @@
   }
 
   function renderDict(body) {
+    body.className = "gw-set-body gw-set-body-lib";
     body.innerHTML =
       "<h3>我的词库</h3>" +
-      '<p class="gw-set-desc">跟账号走。正文划选，校对条点「收入」。这里只看/删。</p>' +
+      '<p class="gw-set-desc">跟账号走。正文划选后点校对条「词典」或「必改」。本页只查看和删除。</p>' +
       '<p class="gw-set-hint" id="gwCloudHint">加载中…</p>' +
-      '<div class="gw-set-block"><h4>别再报这些</h4><div class="gw-set-badges" id="gwWlBadges"></div></div>' +
-      '<div class="gw-set-block"><h4>这种错必须改</h4><ul class="gw-set-list" id="gwMfList"></ul></div>';
+      '<div class="gw-lib">' +
+      '<div class="gw-lib-tabs" id="gwLibTabs">' +
+      '<button type="button" data-lib="wl">别再报这些</button>' +
+      '<button type="button" data-lib="mf">必须改</button>' +
+      "</div>" +
+      '<div class="gw-lib-meta" id="gwLibMeta"></div>' +
+      '<ul class="gw-lib-list" id="gwLibList"></ul>' +
+      "</div>";
     loadCloudProof(function (data, err) {
       var hint = $("gwCloudHint");
       if (!hint) return;
       if (err) {
         hint.textContent = err;
+        cloudProof = null;
+        paintDictList();
         return;
       }
-      hint.textContent = "已登录 · 云端词库";
-      $("gwWlBadges").innerHTML = ((data && data.whitelist) || [])
-        .map(function (w) {
-          return (
-            "<span>" +
-            escapeHtml(w.word) +
-            ' <button type="button" data-wl-id="' +
-            w.id +
-            '" aria-label="删除">×</button></span>'
-          );
-        })
-        .join("") || '<span style="color:#a8a29e">还没有</span>';
-      $("gwMfList").innerHTML = ((data && data.mustfix) || [])
-        .map(function (x) {
-          return (
-            "<li><span>" +
-            escapeHtml(x.wrong) +
-            " → " +
-            escapeHtml(x.right) +
-            '</span><button type="button" data-mf-id="' +
-            x.id +
-            '">删除</button></li>'
-          );
-        })
-        .join("") || '<li style="color:#a8a29e">还没有</li>';
-      $("gwWlBadges").onclick = function (e) {
-        var b = e.target.closest("[data-wl-id]");
-        if (!b) return;
-        delCloud("whitelist", Number(b.getAttribute("data-wl-id")), function () {
-          render();
-        });
-      };
-      $("gwMfList").onclick = function (e) {
-        var b = e.target.closest("[data-mf-id]");
-        if (!b) return;
-        delCloud("mustfix", Number(b.getAttribute("data-mf-id")), function () {
-          render();
-        });
-      };
+      cloudProof = data || {};
+      hint.textContent = "已登录 · 跟账号走";
+      paintDictList();
     });
+    $("gwLibTabs").onclick = function (e) {
+      var b = e.target.closest("[data-lib]");
+      if (!b) return;
+      dictTab = b.getAttribute("data-lib") === "mf" ? "mf" : "wl";
+      paintDictList();
+    };
+    $("gwLibList").onclick = function (e) {
+      var b = e.target.closest("[data-del-kind]");
+      if (!b) return;
+      delCloud(
+        b.getAttribute("data-del-kind"),
+        Number(b.getAttribute("data-del-id")),
+        function () {
+          loadCloudProof(function (data, err) {
+            cloudProof = err ? null : data || {};
+            var hint = $("gwCloudHint");
+            if (hint) hint.textContent = err || "已登录 · 跟账号走";
+            paintDictList();
+          });
+        }
+      );
+    };
+  }
+
+  function paintDictList() {
+    var tabs = $("gwLibTabs");
+    var meta = $("gwLibMeta");
+    var list = $("gwLibList");
+    if (!tabs || !meta || !list) return;
+    qsa("[data-lib]", tabs).forEach(function (btn) {
+      btn.classList.toggle("on", btn.getAttribute("data-lib") === dictTab);
+    });
+    var wl = (cloudProof && cloudProof.whitelist) || [];
+    var mf = (cloudProof && cloudProof.mustfix) || [];
+    if (dictTab === "mf") {
+      meta.textContent = mf.length ? "共 " + mf.length + " 条" : "";
+      list.innerHTML = mf.length
+        ? mf
+            .map(function (x) {
+              return (
+                '<li class="gw-lib-row">' +
+                '<div class="gw-lib-pair">' +
+                "<b>" +
+                escapeHtml(x.wrong) +
+                "</b>" +
+                '<span class="gw-lib-arrow" aria-hidden="true">→</span>' +
+                "<span>" +
+                escapeHtml(x.right) +
+                "</span></div>" +
+                '<button type="button" data-del-kind="mustfix" data-del-id="' +
+                x.id +
+                '">删除</button></li>'
+              );
+            })
+            .join("")
+        : '<li class="gw-lib-empty">还没有。正文划选「错→对」后点校对条「必改」。</li>';
+      return;
+    }
+    meta.textContent = wl.length ? "共 " + wl.length + " 个词" : "";
+    list.innerHTML = wl.length
+      ? wl
+          .slice()
+          .sort(function (a, b) {
+            return String(a.word || "").localeCompare(String(b.word || ""));
+          })
+          .map(function (w) {
+            return (
+              '<li class="gw-lib-row">' +
+              '<span class="gw-lib-word" title="' +
+              escapeHtml(w.word) +
+              '">' +
+              escapeHtml(w.word) +
+              "</span>" +
+              '<button type="button" data-del-kind="whitelist" data-del-id="' +
+              w.id +
+              '">删除</button></li>'
+            );
+          })
+          .join("")
+      : '<li class="gw-lib-empty">还没有。正文划选后点校对条「词典」。</li>';
   }
 
   function renderFacts(body) {
     body.innerHTML =
       "<h3>数据核验</h3>" +
-      '<p class="gw-set-desc">对照数字跟账号。划选正文，校对条「收入 → 收到数字表」。启用请在「校对」勾选数据核验。</p>' +
+      '<p class="gw-set-desc">划选正文，校对条点「数据」，整段收录并记下日期。启用请在「校对」勾选数据核验。</p>' +
       '<p class="gw-set-hint" id="gwCloudHint">加载中…</p>' +
-      '<div class="gw-set-block"><h4>对照条目</h4><ul class="gw-set-list" id="gwFiList"></ul></div>';
+      '<div class="gw-set-block"><h4>已收录</h4><ul class="gw-set-list gw-set-facts" id="gwFiList"></ul></div>';
     loadCloudProof(function (data, err) {
       var hint = $("gwCloudHint");
       if (!hint) return;
@@ -320,22 +383,36 @@
         hint.textContent = err;
         return;
       }
-      hint.textContent = "已登录 · 云端数字表";
+      hint.textContent = "已登录 · 跟账号走";
       var items = (data && data.facts) || [];
-      $("gwFiList").innerHTML = items
-        .map(function (it) {
-          return (
-            "<li><span>" +
-            escapeHtml(it.label) +
-            "：" +
-            escapeHtml(it.value) +
-            escapeHtml(it.unit || "") +
-            '</span><button type="button" data-fi-id="' +
-            it.id +
-            '">删除</button></li>'
-          );
-        })
-        .join("") || '<li style="color:#a8a29e">暂无</li>';
+      $("gwFiList").innerHTML =
+        items
+          .map(function (it) {
+            var meta = it.snippet
+              ? fmtRecorded(it.recorded_at) + "收录"
+              : String(it.label || "") +
+                "：" +
+                String(it.value || "") +
+                String(it.unit || "");
+            var bodyText = it.snippet ? String(it.snippet) : "";
+            return (
+              '<li class="gw-set-fact">' +
+              "<div>" +
+              '<div class="gw-set-fact-meta">' +
+              escapeHtml(meta) +
+              "</div>" +
+              (bodyText
+                ? '<div class="gw-set-fact-body">' +
+                  escapeHtml(bodyText) +
+                  "</div>"
+                : "") +
+              "</div>" +
+              '<button type="button" data-fi-id="' +
+              it.id +
+              '">删除</button></li>'
+            );
+          })
+          .join("") || '<li style="color:#a8a29e">暂无。校对条划选后点「数据」。</li>';
       $("gwFiList").onclick = function (e) {
         var b = e.target.closest("[data-fi-id]");
         if (!b) return;
@@ -344,6 +421,12 @@
         });
       };
     });
+  }
+
+  function fmtRecorded(s) {
+    var m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return s ? String(s) : "";
+    return m[1] + "年" + Number(m[2]) + "月" + Number(m[3]) + "日";
   }
 
   function renderAdvanced(body) {
@@ -393,6 +476,7 @@
   function render() {
     var body = $("gwSetBody");
     if (!body || !draft) return;
+    body.className = "gw-set-body";
     qsa("#gwSetNav [data-pane]").forEach(function (btn) {
       btn.classList.toggle("on", btn.getAttribute("data-pane") === pane);
     });

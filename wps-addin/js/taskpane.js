@@ -351,6 +351,7 @@
   }
 
   var CHAT_STORE_KEY = "chat_snapshot_v1";
+  var lastSessionRoot = "";
 
   function slimWorkForStore(w) {
     if (!w || !String(w.text || "").replace(/\s/g, "")) return null;
@@ -418,96 +419,280 @@
     });
   }
 
-  function persistChat(reason) {
-    if (!window.GwUserPrefs) return;
+  function slimProofForStore(items) {
+    return (items || []).slice(0, 200).map(function (it) {
+      var o = {
+        type: it.type,
+        original: String(it.original || "").slice(0, 2000),
+        suggestion: String(it.suggestion || "").slice(0, 2000),
+        reason: String(it.reason || "").slice(0, 500),
+        start: Number(it.start),
+        end: Number(it.end),
+        _ignored: !!it._ignored,
+        _applied: !!it._applied
+      };
+      if (it.path) o.path = it.path;
+      if (it.peer) o.peer = String(it.peer).slice(0, 2000);
+      if (it.peerPath) o.peerPath = it.peerPath;
+      return o;
+    });
+  }
+
+  function slimProofSnapForStore(snap) {
+    if (!snap || snap.text == null) return null;
+    return {
+      text: String(snap.text).slice(0, 80000),
+      baseStart: Number(snap.baseStart) || 0,
+      scope: snap.scope || "full"
+    };
+  }
+
+  function lastSuiteOptionsFromChat(list) {
+    var i;
+    for (i = (list || []).length - 1; i >= 0; i--) {
+      var m = list[i];
+      if (m && Array.isArray(m.suiteOptions) && m.suiteOptions.length) {
+        return m.suiteOptions;
+      }
+      if (m && m.suite && Array.isArray(m.variants) && m.variants.length) {
+        return m.variants;
+      }
+    }
+    return [];
+  }
+
+  function memPersistCount() {
+    return (
+      ((state.chatWrite && state.chatWrite.length) || 0) +
+      ((state.chatSuite && state.chatSuite.length) || 0) +
+      ((state.proof && state.proof.length) || 0) +
+      ((state.options && state.options.length) || 0)
+    );
+  }
+
+  function setProofClearEnabled() {
+    var btn = $("proofClear");
+    if (btn) btn.disabled = !(state.proof && state.proof.length);
+  }
+
+  function storeHasSession(data) {
+    if (!data) return false;
+    return !!(
+      (data.chatWrite && data.chatWrite.length) ||
+      (data.chatSuite && data.chatSuite.length) ||
+      (data.chat && data.chat.length) ||
+      (data.proof && data.proof.length) ||
+      (data.options && data.options.length)
+    );
+  }
+
+  function splitRestoredChats(data) {
+    var nextWrite = [];
+    var nextSuite = [];
+    if (Array.isArray(data.chatWrite) || Array.isArray(data.chatSuite)) {
+      nextWrite = data.chatWrite || [];
+      nextSuite = data.chatSuite || [];
+      if (
+        !nextSuite.length &&
+        Array.isArray(data.chat) &&
+        data.chat.length
+      ) {
+        data.chat.forEach(function (m) {
+          if (m && m.suite) nextSuite.push(m);
+        });
+      }
+    } else if (Array.isArray(data.chat) && data.chat.length) {
+      data.chat.forEach(function (m) {
+        if (m && m.suite) nextSuite.push(m);
+        else if (m) nextWrite.push(m);
+      });
+    }
+    return { write: nextWrite, suite: nextSuite };
+  }
+
+  function restoreProofFromStore(data) {
+    if (!Array.isArray(data.proof) || !data.proof.length) {
+      state.proof = [];
+      state.proofSnap = null;
+      state.proofActive = -1;
+      return;
+    }
+    state.proof = data.proof;
+    state.proofSnap = slimProofSnapForStore(data.proofSnap);
+    var a = Number(data.proofActive);
+    state.proofActive = a >= 0 && a < state.proof.length ? a : 0;
+    stampProofItems(state.proof, state.proofSnap && state.proofSnap.text);
+  }
+
+  function restoreSuiteLiveFromStore(data) {
+    state.previewId = null;
+    state.adoptedId = null;
+    if (Array.isArray(data.options) && data.options.length) {
+      state.options = data.options;
+    } else {
+      state.options = lastSuiteOptionsFromChat(state.chatSuite);
+    }
+    if (data.suiteBaseline) state.suiteBaseline = String(data.suiteBaseline);
+    if (Array.isArray(data.suiteBaselineItems)) {
+      state.suiteBaselineItems = data.suiteBaselineItems;
+    }
+  }
+
+  function restoreTabFromStore(data) {
+    if (data.tab === "write" || data.tab === "suite" || data.tab === "proof") {
+      state.tab = data.tab;
+    }
+  }
+
+  function sessionRoot() {
+    if (!window.GwProject || !GwProject.getRoot) return "";
+    return String(GwProject.getRoot() || "");
+  }
+
+  function sessionStoreGetAt(root) {
+    if (!window.GwProject || !GwProject.readMetaJsonAt) return null;
+    if (!root) return null;
+    return GwProject.readMetaJsonAt(root, "session.json");
+  }
+
+  function sessionStoreSetAt(root, obj) {
+    if (!window.GwProject || !GwProject.writeMetaJsonAt) return false;
+    if (!root) return false;
+    return !!GwProject.writeMetaJsonAt(root, "session.json", obj);
+  }
+
+  function sessionStoreGet() {
+    return sessionStoreGetAt(sessionRoot());
+  }
+
+  function sessionStoreSet(obj) {
+    return sessionStoreSetAt(sessionRoot(), obj);
+  }
+
+  function sessionOldCount(old) {
+    if (!old) return 0;
+    return (
+      ((old.chatWrite && old.chatWrite.length) || 0) +
+      ((old.chatSuite && old.chatSuite.length) || 0) +
+      ((old.chat && old.chat.length) || 0) +
+      ((old.proof && old.proof.length) || 0) +
+      ((old.options && old.options.length) || 0)
+    );
+  }
+
+  function takeLegacyPrefsSnapshot() {
+    if (!window.GwUserPrefs) return null;
+    var raw = GwUserPrefs.get(CHAT_STORE_KEY);
+    if (!raw) return null;
     try {
-      var writeN = (state.chatWrite && state.chatWrite.length) || 0;
-      var suiteN = (state.chatSuite && state.chatSuite.length) || 0;
-      /* 空内存关窗/定时落盘禁止冲掉盘上已有对话（仅「清空」可写空） */
-      if (!writeN && !suiteN && reason !== "user_clear") {
-        var existing = GwUserPrefs.get(CHAT_STORE_KEY);
-        if (existing) {
-          try {
-            var old = JSON.parse(existing);
-            var oldN =
-              ((old.chatWrite && old.chatWrite.length) || 0) +
-              ((old.chatSuite && old.chatSuite.length) || 0) +
-              ((old.chat && old.chat.length) || 0);
-            if (oldN > 0) {
-              logWarn("chat.persist.skip_empty_overwrite", {
-                reason: reason || "",
-                oldN: oldN
-              });
-              return;
-            }
-          } catch (eSkip) {}
+      var data = JSON.parse(raw);
+      return storeHasSession(data) ? data : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function slimOptionsForStore(list) {
+    return (list || []).slice(0, 6).map(function (opt) {
+      return {
+        id: opt.id,
+        note: opt.note,
+        md: String(opt.md || "").slice(0, 8000),
+        recommend: !!opt.recommend,
+        score: opt.score,
+        items: opt.items
+      };
+    });
+  }
+
+  function sessionPayload(reason) {
+    return {
+      v: 3,
+      savedAt: Date.now(),
+      reason: reason || "",
+      tab: state.tab,
+      chatWrite: slimChatForStore(state.chatWrite),
+      chatSuite: slimChatForStore(state.chatSuite),
+      work: slimWorkForStore(state.work),
+      proof: slimProofForStore(state.proof),
+      proofSnap: slimProofSnapForStore(state.proofSnap),
+      proofActive: state.proofActive,
+      options: slimOptionsForStore(state.options),
+      suiteBaseline: state.suiteBaseline
+        ? String(state.suiteBaseline).slice(0, 20000)
+        : "",
+      suiteBaselineItems: state.suiteBaselineItems
+        ? state.suiteBaselineItems.slice(0, 40)
+        : null,
+      baseDraft: state.baseDraft || null,
+      taskCard: state.taskCard || null,
+      _clarifyAskedOnce: !!state._clarifyAskedOnce
+    };
+  }
+
+  function persistChat(reason, root) {
+    try {
+      root = root || sessionRoot();
+      if (!root) {
+        logWarn("chat.persist.skip_no_root", reason || "");
+        return;
+      }
+      var allowEmpty =
+        reason === "user_clear" ||
+        reason === "user_clear_proof" ||
+        reason === "proof_ok";
+      if (!memPersistCount() && !allowEmpty) {
+        var oldN = sessionOldCount(sessionStoreGetAt(root));
+        if (oldN > 0) {
+          logWarn("chat.persist.skip_empty_overwrite", {
+            reason: reason || "",
+            oldN: oldN
+          });
+          return;
         }
       }
-      var payload = {
-        v: 2,
-        savedAt: Date.now(),
-        reason: reason || "",
-        tab: state.tab,
-        chatWrite: slimChatForStore(state.chatWrite),
-        chatSuite: slimChatForStore(state.chatSuite),
-        work: slimWorkForStore(state.work),
-        baseDraft: state.baseDraft || null,
-        taskCard: state.taskCard || null,
-        _clarifyAskedOnce: !!state._clarifyAskedOnce
-      };
-      GwUserPrefs.set(CHAT_STORE_KEY, JSON.stringify(payload));
+      var ok = sessionStoreSetAt(root, sessionPayload(reason));
       logInfo("chat.persist", {
         reason: reason || "",
-        writeN: writeN,
-        suiteN: suiteN,
-        bytes: String(GwUserPrefs.get(CHAT_STORE_KEY) || "").length
+        writeN: (state.chatWrite && state.chatWrite.length) || 0,
+        suiteN: (state.chatSuite && state.chatSuite.length) || 0,
+        proofN: (state.proof && state.proof.length) || 0,
+        optN: (state.options && state.options.length) || 0,
+        root: root,
+        ok: !!ok
       });
+      if (!ok) logWarn("chat.persist.fail_disk", root);
     } catch (e) {
       logWarn("chat.persist.fail", String(e && e.message ? e.message : e));
     }
   }
 
   function restoreChat() {
-    if (!window.GwUserPrefs) return false;
     try {
-      var raw = GwUserPrefs.get(CHAT_STORE_KEY);
-      if (!raw) {
-        logInfo("chat.restore.skip", "empty");
-        return false;
-      }
-      var data = JSON.parse(raw);
-      applyRestoredWork(data);
-      var nextWrite = [];
-      var nextSuite = [];
-      if (Array.isArray(data.chatWrite) || Array.isArray(data.chatSuite)) {
-        nextWrite = data.chatWrite || [];
-        nextSuite = data.chatSuite || [];
-        if (
-          !nextSuite.length &&
-          Array.isArray(data.chat) &&
-          data.chat.length
-        ) {
-          data.chat.forEach(function (m) {
-            if (m && m.suite) nextSuite.push(m);
-          });
+      var data = sessionStoreGet();
+      if (!data) {
+        var legacy = takeLegacyPrefsSnapshot();
+        if (legacy && sessionRoot()) {
+          sessionStoreSet(legacy);
+          try {
+            if (window.GwUserPrefs) GwUserPrefs.set(CHAT_STORE_KEY, "");
+          } catch (eClr) {}
+          data = legacy;
+          logInfo("chat.restore.migrated_prefs", sessionRoot());
         }
-      } else if (Array.isArray(data.chat) && data.chat.length) {
-        /* v1 迁移：按 suite 标记拆到两轨 */
-        data.chat.forEach(function (m) {
-          if (m && m.suite) nextSuite.push(m);
-          else if (m) nextWrite.push(m);
-        });
-      } else {
-        logInfo("chat.restore.skip", "no_messages");
+      }
+      if (!data || !storeHasSession(data)) {
+        logInfo("chat.restore.skip", data ? "no_session" : "empty");
         return false;
       }
-      if (!nextWrite.length && !nextSuite.length) {
-        logInfo("chat.restore.skip", "no_messages");
-        return false;
-      }
-      state.chatWrite = nextWrite;
-      state.chatSuite = nextSuite;
+      applyRestoredWork(data);
+      var split = splitRestoredChats(data);
+      state.chatWrite = split.write;
+      state.chatSuite = split.suite;
       rehomeMisplacedSuiteMessages();
+      restoreProofFromStore(data);
+      restoreSuiteLiveFromStore(data);
+      restoreTabFromStore(data);
       if (
         data.baseDraft &&
         isFinite(data.baseDraft.mi) &&
@@ -528,6 +713,9 @@
       logInfo("chat.restore.ok", {
         writeN: state.chatWrite.length,
         suiteN: state.chatSuite.length,
+        proofN: (state.proof && state.proof.length) || 0,
+        optN: (state.options && state.options.length) || 0,
+        tab: state.tab,
         savedAt: data.savedAt,
         reason: data.reason || "",
         base: state.baseDraft,
@@ -537,6 +725,71 @@
     } catch (e) {
       logWarn("chat.restore.fail", String(e && e.message ? e.message : e));
       return false;
+    }
+  }
+
+  function wipeSessionMemory() {
+    try {
+      stopProofFollow();
+    } catch (eStop) {}
+    try {
+      wipeProofMark();
+    } catch (eWipe) {}
+    state.chatWrite = [];
+    state.chatSuite = [];
+    state.options = [];
+    state.proof = [];
+    state.proofSnap = null;
+    state.proofActive = -1;
+    state.work = null;
+    state.baseDraft = null;
+    state.taskCard = window.GwContextKernel
+      ? GwContextKernel.emptyCard()
+      : null;
+    state.pendingClarify = null;
+    state._clarifyAskedOnce = false;
+    state.lastUnderstand = null;
+    state.readSet = [];
+    state.suiteBaseline = "";
+    state.suiteBaselineItems = null;
+    state.previewId = null;
+    state.adoptedId = null;
+    state.writeLiveFrozen = false;
+  }
+
+  function applyRestoredSessionUi(ok) {
+    var parts = [];
+    if (state.chatWrite.length) parts.push("撰写 " + state.chatWrite.length);
+    if (state.chatSuite.length) parts.push("精修 " + state.chatSuite.length);
+    if (state.proof.length) parts.push("校对 " + state.proof.length + " 处");
+    if (state.options.length) parts.push("方案 " + state.options.length);
+    if (ok) tip("已恢复 · " + (parts.join(" · ") || "本工程记忆"));
+    syncTabUi();
+    if (state.tab === "proof" && state.proof && state.proof.length) {
+      startProofFollow();
+    }
+  }
+
+  function bindProjectSession() {
+    if (!window.GwProject) return;
+    if (GwProject.onRootWillChange) {
+      GwProject.onRootWillChange(function () {
+        persistChat("root_leave");
+      });
+    }
+    if (GwProject.onRootChanged) {
+      GwProject.onRootChanged(function (prev, next) {
+        wipeSessionMemory();
+        var ok = false;
+        try {
+          ok = restoreChat();
+        } catch (eR) {
+          logWarn("chat.restore.root_change", String(eR && eR.message));
+        }
+        lastSessionRoot = sessionRoot();
+        applyRestoredSessionUi(ok);
+        if (!ok) tip("已切换工程 · 本工程暂无会话");
+      });
     }
   }
 
@@ -987,7 +1240,7 @@
     var best = -1;
     var bestDist = 1e15;
     state.proof.forEach(function (it, i) {
-      if (it._applied) return;
+      if (it._applied || it._ignored) return;
       var spans = [[Number(it.start), Number(it.end)]];
       if (it._peerStart >= 0) {
         spans.push([
@@ -1886,18 +2139,12 @@
     else state.chatWrite = [];
   }
 
-  function pinRangeChanged(snap) {
-    if (!state.work || !snap) return false;
-    if (typeof state.work.start !== "number" || typeof snap.start !== "number")
-      return true;
-    return state.work.start !== snap.start || state.work.end !== snap.end;
-  }
-
   /**
-   * 换钉前：正文上若还叠着未采用的预览，先揭掉再清方案。
-   * 已采用的改动是定稿，换钉不得还原。
+   * 换钉前：正文上若还叠着未采用的预览，先揭掉再清活方案。
+   * 已采用的改动是定稿，换钉不得还原。侧栏对话保留，发给模型仍按钉过滤。
    */
   function resetSuiteForNewPin() {
+    archiveSuiteOptionsToChat();
     if (
       state.tab === "suite" &&
       state.work &&
@@ -1917,10 +2164,8 @@
 
   function setWorkFromSnapshot(snap, extras) {
     extras = extras || {};
-    var changed = pinRangeChanged(snap);
-    /* 钉住即换工作选区：旧精修建议作废 */
+    /* 钉住即换工作选区：旧精修活方案作废；对话不清 */
     resetSuiteForNewPin();
-    if (changed) clearActivePinChat();
     state.work = {
       text: snap.text,
       start: snap.start,
@@ -2362,6 +2607,7 @@
     var varWrap = $("aiWantVariantsWrap");
     if (varWrap) varWrap.hidden = tab !== "write";
     $("aiClearChat").hidden = tab === "proof";
+    setProofClearEnabled();
     var ha = $("aiHeadActions");
     if (ha) ha.hidden = false;
     var lv = selectedWriteLevels();
@@ -2433,7 +2679,9 @@
         tab === "suite"
           ? "划选后点「钉住」；可反复换钉"
           : tab === "proof"
-            ? "选范围后点开始校对"
+            ? state.proof && state.proof.length
+              ? "点条即可定位；再点开始校对会重新检查"
+              : "选范围后点开始校对"
             : wantVariantsChecked() || wantDraftChecked()
               ? lv.length
                 ? "已选层级 · 钉住范围后发送；落点用选定/光标"
@@ -2472,7 +2720,11 @@
   function updateProofSum() {
     var el = $("proofSum");
     if (!el) return;
-    var n = (state.proof && state.proof.length) || 0;
+    var vis = [];
+    (state.proof || []).forEach(function (it, i) {
+      if (!it._ignored) vis.push(i);
+    });
+    var n = vis.length;
     if (state.tab !== "proof" || !n) {
       el.hidden = true;
       el.textContent = "";
@@ -2480,8 +2732,32 @@
     }
     el.hidden = false;
     var s = n + " 处 · 点条即定位";
-    if (state.proofActive >= 0) s += " · 当前第 " + (state.proofActive + 1) + " 条";
+    var k = vis.indexOf(state.proofActive);
+    if (k >= 0) s += " · 当前第 " + (k + 1) + " 条";
     el.textContent = s;
+  }
+
+  function nextVisibleProof(from) {
+    var i;
+    for (i = from + 1; i < state.proof.length; i++) {
+      if (!state.proof[i]._ignored) return i;
+    }
+    for (i = from - 1; i >= 0; i--) {
+      if (!state.proof[i]._ignored) return i;
+    }
+    return -1;
+  }
+
+  function hideProofCard(idx) {
+    var item = state.proof[idx];
+    if (!item) return;
+    item._ignored = true;
+    wipeProofMark();
+    var next = nextVisibleProof(idx);
+    state.proofActive = next;
+    persistChat("proof_ignore");
+    renderOpts();
+    if (next >= 0) setProofActive(next, {});
   }
 
   function bindProofCard(div, item, idx) {
@@ -2515,6 +2791,7 @@
             item.suggestion
           );
           stampProofItems(state.proof, state.proofSnap && state.proofSnap.text);
+          persistChat("proof_apply");
           renderOpts();
           setProofActive(idx, {});
         } catch (e) {
@@ -2526,15 +2803,22 @@
     if (wlBtn) {
       wlBtn.onclick = function (ev) {
         ev.stopPropagation();
+        hideProofCard(idx);
+        tip("已忽略");
+      };
+    }
+    var banBtn = div.querySelector('[data-act="ban"]');
+    if (banBtn) {
+      banBtn.onclick = function (ev) {
+        ev.stopPropagation();
         if (!window.GwProofIngest) return;
         GwProofIngest.absorbIssue("whitelist", item)
           .then(function () {
-            tip("已忽略");
-            wipeProofMark();
-            div.classList.add("ignored");
+            hideProofCard(idx);
+            tip("已永久不报");
           })
           .catch(function (e) {
-            tip(e.message || "收入失败");
+            tip(e.message || "写入失败");
           });
       };
     }
@@ -2583,6 +2867,7 @@
             : "")
         : '<button type="button" class="primary" data-act="fix">采纳</button>' +
           '<button type="button" data-act="wl">忽略</button>' +
+          '<button type="button" class="ai-linkish" data-act="ban">永久不报</button>' +
           '<button type="button" class="ai-linkish" data-act="mf">必须改</button>' +
           '<button type="button" class="ai-err-go" data-act="go">定位</button>') +
       "</div>";
@@ -2600,6 +2885,40 @@
     }
     bindProofCard(div, item, idx);
     box.appendChild(div);
+  }
+
+  function shouldShowTurnRestore(m) {
+    if (!m || m.role !== "assistant") return false;
+    if (m.autoVersionRel) return true;
+    if (m.suite) return true;
+    if (m.variants && m.variants.length) return true;
+    return false;
+  }
+
+  function appendTurnRestore(parent, m, mi) {
+    var row = document.createElement("div");
+    row.className = "ai-turn-restore";
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "还原本轮";
+    btn.setAttribute("data-restore-turn", String(mi));
+    var can = false;
+    try {
+      can = !!(
+        m.autoVersionRel &&
+        window.GwProject &&
+        GwProject.isAutoRestoreable &&
+        GwProject.isAutoRestoreable(m.autoVersionRel)
+      );
+    } catch (eCan) {}
+    btn.disabled = !can;
+    btn.title = can
+      ? "恢复到本轮发送前的整篇正文"
+      : m.autoVersionRel
+        ? "本轮自动档已不在（只留最近 10 份）"
+        : "本轮没有自动档";
+    row.appendChild(btn);
+    parent.appendChild(row);
   }
 
   function renderOpts() {
@@ -2621,9 +2940,16 @@
         }
         return;
       }
+      var vis = 0;
       state.proof.forEach(function (item, idx) {
+        if (item._ignored) return;
+        vis += 1;
         appendProofCard(box, item, idx);
       });
+      if (!vis) {
+        box.innerHTML =
+          '<div class="ai-empty">本轮已全部忽略。再点「开始校对」会重新检查。</div>';
+      }
       updateProofSum();
       return;
     }
@@ -2648,24 +2974,7 @@
           sbody.className = "ai-bubble-text";
           sbody.textContent = m.text;
           sb.appendChild(sbody);
-          if (m.role === "assistant" && m.autoVersionRel) {
-            var srow = document.createElement("div");
-            srow.className = "ai-turn-restore";
-            var sbtn = document.createElement("button");
-            sbtn.type = "button";
-            sbtn.textContent = "还原本轮";
-            sbtn.setAttribute("data-restore-turn", String(mi));
-            var scan =
-              window.GwProject &&
-              GwProject.isAutoRestoreable &&
-              GwProject.isAutoRestoreable(m.autoVersionRel);
-            sbtn.disabled = !scan;
-            sbtn.title = scan
-              ? "恢复到本轮发送前的整篇正文"
-              : "本轮自动档已不在（只留最近 10 份）";
-            srow.appendChild(sbtn);
-            sb.appendChild(srow);
-          }
+          if (shouldShowTurnRestore(m)) appendTurnRestore(sb, m, mi);
           slog.appendChild(sb);
           /* 历史方案卡：换钉后仍可见；当前活轮由下方 live 卡负责，避免重复 */
           if (
@@ -2748,24 +3057,7 @@
       body.className = "ai-bubble-text";
       body.textContent = m.text;
       b.appendChild(body);
-      if (m.role === "assistant" && m.autoVersionRel) {
-        var turnRow = document.createElement("div");
-        turnRow.className = "ai-turn-restore";
-        var turnBtn = document.createElement("button");
-        turnBtn.type = "button";
-        turnBtn.textContent = "还原本轮";
-        turnBtn.setAttribute("data-restore-turn", String(mi));
-        var canTurn =
-          window.GwProject &&
-          GwProject.isAutoRestoreable &&
-          GwProject.isAutoRestoreable(m.autoVersionRel);
-        turnBtn.disabled = !canTurn;
-        turnBtn.title = canTurn
-          ? "恢复到本轮发送前的整篇正文"
-          : "本轮自动档已不在（只留最近 10 份）";
-        turnRow.appendChild(turnBtn);
-        b.appendChild(turnRow);
-      }
+      if (shouldShowTurnRestore(m)) appendTurnRestore(b, m, mi);
       if (m.role === "assistant" && m.variants && m.variants.length) {
         var liveCard = mi === liveMi;
         m.variants.forEach(function (v, vi) {
@@ -3594,7 +3886,7 @@
     window.__gwTaskpaneApplySuitePrefs = applySuitePrefsFromSettings;
   } catch (eHook) {}
 
-  function runProof() {
+  function captureProofScope() {
     var scope =
       (document.querySelector('input[name="proofScope"]:checked') || {})
         .value || "full";
@@ -3610,11 +3902,74 @@
         baseStart = GwDoc.contentStart ? GwDoc.contentStart() : 0;
       }
     } catch (e) {
-      alert(e.message);
-      return;
+      return { error: e.message, scope: scope };
     }
     if (!String(text).replace(/\s/g, "")) {
-      alert(scope === "selection" ? "请先划选要校对的正文" : "文档为空");
+      return {
+        error: scope === "selection" ? "请先划选要校对的正文" : "文档为空",
+        scope: scope
+      };
+    }
+    return { text: text, baseStart: baseStart, scope: scope };
+  }
+
+  function proofRelayRequest() {
+    try {
+      if (window.GwSettings && GwSettings.reload) GwSettings.reload();
+    } catch (eRel) {}
+    var s = window.GwSettings || {};
+    var engines = s.proofEngineIds
+      ? s.proofEngineIds()
+      : [
+          "punctuation",
+          "format",
+          "dictionary",
+          "typo",
+          "grammar",
+          "sensitive",
+          "duplicate"
+        ];
+    if (!engines.length) engines = ["typo", "grammar"];
+    if (
+      !engines.some(function (e) {
+        return e === "typo" || e === "grammar" || e === "sensitive";
+      })
+    ) {
+      engines = engines.concat(["typo", "grammar"]);
+    }
+    return {
+      engines: engines,
+      extra: {
+        sensitivity: s.proofSensitivity ? s.proofSensitivity() : "normal",
+        whitelist: s.proofWhitelist ? s.proofWhitelist() : [],
+        mustfix: s.proofMustfix ? s.proofMustfix() : [],
+        facts: s.proofFacts ? s.proofFacts() : [],
+        industryPack: s.proofIndustryPack ? s.proofIndustryPack() : true
+      }
+    };
+  }
+
+  function applyProofResults(data, cap) {
+    state.proof =
+      (data && (data.results || (data.data && data.data.results))) || [];
+    state.proofSnap = {
+      text: String(cap.text),
+      baseStart: cap.baseStart,
+      scope: cap.scope
+    };
+    stampProofItems(state.proof, state.proofSnap.text);
+    state.proofActive = state.proof.length ? 0 : -1;
+    persistChat("proof_ok");
+    setProofClearEnabled();
+    renderOpts();
+    startProofFollow();
+    tip("发现 " + state.proof.length + " 处");
+  }
+
+  function runProof() {
+    var cap = captureProofScope();
+    if (cap.error) {
+      alert(cap.error);
       return;
     }
     stopProofFollow();
@@ -3623,67 +3978,11 @@
       setBusy(true);
       tip("校对中…");
       $("proofClear").disabled = false;
-      try {
-        if (window.GwSettings && GwSettings.reload) GwSettings.reload();
-      } catch (eRel) {}
-      var engines =
-        window.GwSettings && GwSettings.proofEngineIds
-          ? GwSettings.proofEngineIds()
-          : [
-              "punctuation",
-              "format",
-              "dictionary",
-              "typo",
-              "grammar",
-              "sensitive",
-              "duplicate"
-            ];
-      if (!engines.length) {
-        engines = ["typo", "grammar"];
-      }
-      if (
-        !engines.some(function (e) {
-          return e === "typo" || e === "grammar" || e === "sensitive";
-        })
-      ) {
-        engines = engines.concat(["typo", "grammar"]);
-      }
-      var sens =
-        window.GwSettings && GwSettings.proofSensitivity
-          ? GwSettings.proofSensitivity()
-          : "normal";
-      var wl =
-        window.GwSettings && GwSettings.proofWhitelist
-          ? GwSettings.proofWhitelist()
-          : [];
-      var mf =
-        window.GwSettings && GwSettings.proofMustfix
-          ? GwSettings.proofMustfix()
-          : [];
-      var facts =
-        window.GwSettings && GwSettings.proofFacts
-          ? GwSettings.proofFacts()
-          : [];
+      var req = proofRelayRequest();
       if (window.GwProofIngest) GwProofIngest.hidePanel();
-      return GwRelay.proofread(text, engines, {
-        sensitivity: sens,
-        whitelist: wl,
-        mustfix: mf,
-        facts: facts
-      })
+      return GwRelay.proofread(cap.text, req.engines, req.extra)
         .then(function (data) {
-          state.proof =
-            (data && (data.results || (data.data && data.data.results))) || [];
-          state.proofSnap = {
-            text: String(text),
-            baseStart: baseStart,
-            scope: scope
-          };
-          stampProofItems(state.proof, state.proofSnap.text);
-          state.proofActive = state.proof.length ? 0 : -1;
-          renderOpts();
-          startProofFollow();
-          tip("发现 " + state.proof.length + " 处");
+          applyProofResults(data, cap);
         })
         .catch(function (e) {
           var msg =
@@ -3715,11 +4014,7 @@
     }
     state.tab = tab;
     if (tab === "proof") {
-      stopProofFollow();
       wipeProofMark();
-      state.proof = [];
-      state.proofSnap = null;
-      state.proofActive = -1;
     }
     if (tab === "suite" || tab === "write") {
       rehomeMisplacedSuiteMessages();
@@ -3731,7 +4026,20 @@
       suiteN: state.chatSuite.length
     });
     syncTabUi();
+    persistChat("tab");
+    if (tab === "proof" && state.proof && state.proof.length) {
+      startProofFollow();
+    }
   }
+
+  window.GwProofUi = {
+    activeItem: function () {
+      var i = state.proofActive;
+      if (i < 0 || i >= state.proof.length) return null;
+      var it = state.proof[i];
+      return it && !it._ignored ? it : null;
+    }
+  };
 
   window.onload = function () {
     logInfo("ui.onload", {
@@ -3758,19 +4066,19 @@
       });
     } catch (eFocus) {}
     try {
-      if (restoreChat()) {
-        tip(
-          "已恢复对话 · 撰写 " +
-            state.chatWrite.length +
-            " · 精修 " +
-            state.chatSuite.length
-        );
-      }
+      var restored = restoreChat();
+      applyRestoredSessionUi(restored);
+      if (restored) persistChat("restore");
+      lastSessionRoot = sessionRoot();
     } catch (eRestore) {
       logWarn("chat.restore.crash", String(eRestore && eRestore.message));
     }
+    bindProjectSession();
     ensureDefaultWriteLevel();
     syncTabUi();
+    if (state.tab === "proof" && state.proof && state.proof.length) {
+      startProofFollow();
+    }
     startLiveWatch();
 
     window.addEventListener("beforeunload", function () {
@@ -3787,11 +4095,25 @@
     });
     /* 定时落盘，防最小化关窗来不及写 beforeunload */
     setInterval(function () {
+      var r = sessionRoot();
       if (
-        (state.chatWrite && state.chatWrite.length) ||
-        (state.chatSuite && state.chatSuite.length) ||
-        workText().replace(/\s/g, "")
-      )
+        lastSessionRoot &&
+        r &&
+        lastSessionRoot.replace(/\\/g, "/").toLowerCase() !==
+          r.replace(/\\/g, "/").toLowerCase()
+      ) {
+        persistChat("root_leave", lastSessionRoot);
+        wipeSessionMemory();
+        var okMiss = false;
+        try {
+          okMiss = restoreChat();
+        } catch (eMiss) {}
+        lastSessionRoot = r;
+        applyRestoredSessionUi(okMiss);
+      } else {
+        lastSessionRoot = r || lastSessionRoot;
+      }
+      if (memPersistCount() || workText().replace(/\s/g, ""))
         persistChat("interval");
     }, 8000);
 
@@ -4020,9 +4342,11 @@
       state.proof = [];
       state.proofSnap = null;
       state.proofActive = -1;
-      $("proofClear").disabled = true;
+      persistChat("user_clear_proof");
+      setProofClearEnabled();
       if (window.GwProofIngest) GwProofIngest.hidePanel();
       renderOpts();
+      tip("已清空校对结果 · 正文未改动");
     };
     var citeBar = $("aiCiteBar");
     if (citeBar) {

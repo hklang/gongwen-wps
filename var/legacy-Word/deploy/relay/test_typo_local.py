@@ -79,6 +79,29 @@ def main() -> int:
     ok(len(merged) == 1 and merged[0]["original"] == short, "重叠留最短片段")
     ok("综合" not in str(merged[0].get("reason") or ""), "不拼综合理由")
 
+    pack = {
+        "whitelist": ["国务院"],
+        "mustfix": [
+            {"wrong": "帐号", "right": "账号"},
+            {"wrong": "在在", "right": "再"},
+        ],
+    }
+    wl, mf = m.merge_industry_pack(
+        ["专名"],
+        [{"wrong": "帐号", "right": "账户"}],
+        enabled=True,
+        pack=pack,
+    )
+    ok("专名" in wl and "国务院" in wl, "行业包白名单并入且保留用户词")
+    acc = [x for x in mf if x.get("wrong") == "帐号"]
+    ok(len(acc) == 1 and acc[0].get("right") == "账户", "用户必改覆盖行业包同词")
+    ok(any(x.get("wrong") == "在在" for x in mf), "行业包独有必改并入")
+    wl2, mf2 = m.merge_industry_pack([], [], enabled=False, pack=pack)
+    ok(wl2 == [] and mf2 == [], "关掉行业包不合并")
+    loaded = m.load_industry_pack()
+    ok(isinstance(loaded.get("mustfix"), list) and loaded["mustfix"], "产品包可加载")
+    ok(len(loaded["mustfix"]) <= 80, "产品包不超过 80 条")
+
     print("FAILED:" if fails else "ALL PASS", "; ".join(fails))
     return 1 if fails else 0
 

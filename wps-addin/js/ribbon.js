@@ -390,11 +390,12 @@ function startHostMinRestoreWatcher() {
 }
 
 function OnAction(control) {
-  if (control.Id === "btnShowDialog") {
+  var id = control && control.Id;
+  if (id === "btnShowDialog" || id === "btnShowDialogHome") {
     openGongwenWorkspace();
     return true;
   }
-  if (control.Id === "btnShowProject") {
+  if (id === "btnShowProject") {
     openProjectDialog();
     return true;
   }
@@ -402,7 +403,7 @@ function OnAction(control) {
 }
 
 function GetImage(control) {
-  return "images/2.svg";
+  return "images/3.svg";
 }
 
 function OnGetEnabled(control) {

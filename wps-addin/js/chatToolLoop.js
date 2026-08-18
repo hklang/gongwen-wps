@@ -276,6 +276,10 @@
           gather_only: !!gatherOnly,
           history: history,
           session_summary: sessionSummary,
+          project_memory:
+            global.GwProject && GwProject.readMemoryInject
+              ? GwProject.readMemoryInject()
+              : "",
           doc_md: "",
           assistant_reasoning: state.lastReasoning || "",
           want_options: wantOptions,

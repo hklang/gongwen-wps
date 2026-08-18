@@ -4,27 +4,27 @@
   <meta charset="utf-8" />
   <title>公文助手</title>
   <link rel="stylesheet" href="./proj-aside.css" />
-  <link rel="stylesheet" href="./ai-aside.css" />
+  <link rel="stylesheet" href="./ai-aside.css?v=20260818g" />
   <link rel="stylesheet" href="./workspace.css" />
   <script type="text/javascript" src="../js/util.js"></script>
   <script type="text/javascript" src="../js/gwlog.js"></script>
   <script type="text/javascript" src="../js/userPrefs.js"></script>
   <script type="text/javascript" src="../js/followHost.js"></script>
   <script type="text/javascript" src="../js/docapi.js?v=20260816k"></script>
-  <script type="text/javascript" src="../js/relay.js"></script>
-  <script type="text/javascript" src="../js/account.js"></script>
-  <script type="text/javascript" src="../js/proofIngest.js"></script>
-  <script type="text/javascript" src="../js/settingsStore.js"></script>
+  <script type="text/javascript" src="../js/relay.js?v=20260818g"></script>
+  <script type="text/javascript" src="../js/account.js?v=20260818g"></script>
+  <script type="text/javascript" src="../js/proofIngest.js?v=20260818g"></script>
+  <script type="text/javascript" src="../js/settingsStore.js?v=20260818g"></script>
   <script type="text/javascript" src="../js/settingsOpen.js"></script>
-  <script type="text/javascript" src="../js/projectRoot.js"></script>
+  <script type="text/javascript" src="../js/projectRoot.js?v=20260818g"></script>
   <script type="text/javascript" src="../js/materialIndex.js"></script>
   <script type="text/javascript" src="../js/materialTools.js"></script>
-  <script type="text/javascript" src="../js/chatToolLoop.js"></script>
+  <script type="text/javascript" src="../js/chatToolLoop.js?v=20260818g"></script>
   <script type="text/javascript" src="../js/contextKernel.js"></script>
   <script type="text/javascript" src="../js/qualityKernel.js"></script>
   <script type="text/javascript" src="../js/projAside.js"></script>
   <script type="text/javascript" src="../js/cloudTemplatesOpen.js"></script>
-  <script type="text/javascript" src="../js/taskpane.js?v=20260816k"></script>
+  <script type="text/javascript" src="../js/taskpane.js?v=20260818g"></script>
   <script type="text/javascript">
     if (window.GwUserPrefs) GwUserPrefs.watchWindow("assistant");
   </script>
@@ -73,14 +73,11 @@
         <div class="ai-proof-actions">
           <button type="button" class="primary" id="proofRun">开始校对</button>
           <span class="ai-proof-ingest" id="proofIngestWrap">
-            <button type="button" id="proofIngest">收入</button>
-            <div class="ai-proof-ingest-menu" id="proofIngestMenu" hidden>
-              <button type="button" data-ingest="whitelist">别再报这些</button>
-              <button type="button" data-ingest="mustfix">这种错必须改</button>
-              <button type="button" data-ingest="facts">收到数字表</button>
-            </div>
+            <button type="button" data-ingest="whitelist">词典</button>
+            <button type="button" data-ingest="mustfix">必改</button>
+            <button type="button" data-ingest="facts">数据</button>
           </span>
-          <button type="button" id="proofClear" disabled>清空</button>
+          <button type="button" id="proofClear" disabled title="清空本轮校对结果，正文不动">清空</button>
         </div>
         <div class="ai-proof-sum" id="proofSum" hidden></div>
         <div id="proofIngestPanel" class="ai-proof-ingest-panel" hidden></div>

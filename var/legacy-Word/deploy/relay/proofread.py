@@ -2,14 +2,17 @@
 """公文校对：全部由模型判；用户词库/数字表只当证据。供 gongwen-relay /api/proofread。
 
 唯一定稿路径：Word/deploy/relay/proofread.py（勿在 editor/ 复制）。
-无文件读写、无 shell。
+行业包从同目录 industry_proof.json 读取。无 shell。
 """
 from __future__ import annotations
 
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
+
+_INDUSTRY_PATH = Path(__file__).resolve().parent / "industry_proof.json"
 
 # ── 引擎清单 ──────────────────────────────────────────────
 
@@ -100,9 +103,12 @@ _HEADS = {
         "不改文风、不报错别字。"
     ),
     "dataverify": (
-        "你是数据核验专家。按【参考事实数据】比对文中数字、名称。\n"
-        "无参考或一致则不报；不一致则标出原文片段，建议正确值。\n"
-        "不把计量本身当成错别字来删数字。"
+        "你是数据核验专家。按【参考事实数据】比对文中数字和口径。\n"
+        "参考是用户某日收录的原文整段，不要拆字段，不要改写收录内容。\n"
+        "只在文中数字或口径与某条收录明显不一致时才报。\n"
+        "reason 必须写成「与YYYY年M月D日收录的数据不一致」，并点明差在哪。\n"
+        "suggestion 只改正文中出错的那一小段，不要整段替换。\n"
+        "无参考或一致则不报。不把计量本身当成错别字。"
     ),
 }
 
@@ -345,12 +351,24 @@ def _run_llm_engine(
     return correct_positions(all_err, text)
 
 
+def _cn_day(s: str) -> str:
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", str(s or "").strip())
+    if not m:
+        return str(s or "").strip() or "未知日期"
+    return "%s年%s月%s日" % (m.group(1), int(m.group(2)), int(m.group(3)))
+
+
 def _facts_block(facts: list[dict] | None) -> str:
     if not facts:
         return ""
     lines = []
     for it in facts[:40]:
         if not isinstance(it, dict):
+            continue
+        snippet = str(it.get("snippet") or "").strip()[:2000]
+        if snippet:
+            day = _cn_day(str(it.get("recorded_at") or it.get("date") or ""))
+            lines.append("- 【%s收录】\n%s" % (day, snippet))
             continue
         label = str(it.get("label") or "").strip()
         value = str(it.get("value") or "").strip()
@@ -380,6 +398,79 @@ def _mustfix_block(mustfix: list[dict] | None) -> str:
     return "\n".join(lines[:80])
 
 
+def load_industry_pack() -> dict[str, Any]:
+    empty: dict[str, Any] = {"whitelist": [], "mustfix": []}
+    try:
+        raw = json.loads(_INDUSTRY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return empty
+    if not isinstance(raw, dict):
+        return empty
+    wl = raw.get("whitelist") if isinstance(raw.get("whitelist"), list) else []
+    mf = raw.get("mustfix") if isinstance(raw.get("mustfix"), list) else []
+    return {
+        "whitelist": [str(w).strip() for w in wl if str(w).strip()][:80],
+        "mustfix": [x for x in mf if isinstance(x, dict)][:80],
+    }
+
+
+def merge_industry_pack(
+    whitelist: list[str] | None,
+    mustfix: list[dict] | None,
+    *,
+    enabled: bool = True,
+    pack: dict | None = None,
+) -> tuple[list[str], list[dict]]:
+    user_wl = [str(w).strip() for w in (whitelist or []) if str(w).strip()]
+    user_mf = [x for x in (mustfix or []) if isinstance(x, dict)]
+    if not enabled:
+        return user_wl, user_mf
+    src = pack if isinstance(pack, dict) else load_industry_pack()
+    seen_w = set(user_wl)
+    for w in src.get("whitelist") or []:
+        s = str(w).strip()
+        if s and s not in seen_w:
+            user_wl.append(s)
+            seen_w.add(s)
+    seen_m: set[str] = set()
+    for it in user_mf:
+        w = str(it.get("wrong") or it.get("original") or "").strip()
+        if w:
+            seen_m.add(w)
+    extra: list[dict] = []
+    for it in src.get("mustfix") or []:
+        if not isinstance(it, dict):
+            continue
+        w = str(it.get("wrong") or "").strip()
+        r = str(it.get("right") or "").strip()
+        if w and r and w != r and w not in seen_m:
+            extra.append({"wrong": w, "right": r})
+            seen_m.add(w)
+    return user_wl, user_mf + extra
+
+
+def _keep_grounded(merged: list[dict], text: str) -> list[dict]:
+    """original 必须是原文子串（防模型串稿/臆造）。"""
+    kept: list[dict] = []
+    for e in merged:
+        orig = str(e.get("original") or "")
+        if not orig or orig not in text:
+            continue
+        if e.get("type") == "duplicate":
+            peer = str(e.get("peer") or "")
+            if peer and peer not in text:
+                e = dict(e)
+                e.pop("peer", None)
+            if not e.get("suggestion") or e.get("suggestion") == orig:
+                e = dict(e)
+                e["suggestion"] = DUP_SUGGESTION
+            kept.append(e)
+            continue
+        if e.get("suggestion") != orig:
+            kept.append(e)
+    return kept
+
+
 def proofread(
     text: str,
     engines: list[str] | None = None,
@@ -388,6 +479,7 @@ def proofread(
     whitelist: list[str] | None = None,
     mustfix: list[dict] | None = None,
     facts: list[dict] | None = None,
+    industry_pack: bool = True,
     provider: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
@@ -404,8 +496,9 @@ def proofread(
     eng = [e for e in (engines or DEFAULT_QUICK) if e in ENGINE_META]
     if not eng:
         eng = list(DEFAULT_QUICK)
-    wl = [str(w).strip() for w in (whitelist or []) if str(w).strip()]
-    mf = list(mustfix or [])
+    wl, mf = merge_industry_pack(
+        whitelist, mustfix, enabled=bool(industry_pack)
+    )
     facts_block = _facts_block(facts)
     mustfix_block = _mustfix_block(mf)
     whitelist_block = "、".join(wl[:80])
@@ -444,25 +537,7 @@ def proofread(
     raw_rest = [e for e in raw if e.get("type") != "duplicate"]
     merged = correct_positions(deterministic_merge(raw_rest, text), text)
     merged.extend(correct_positions(raw_dups, text))
-    # 终检：original 必须是原文子串（防模型串稿/臆造）
-    kept: list[dict] = []
-    for e in merged:
-        orig = str(e.get("original") or "")
-        if not orig or orig not in text:
-            continue
-        if e.get("type") == "duplicate":
-            peer = str(e.get("peer") or "")
-            if peer and peer not in text:
-                e = dict(e)
-                e.pop("peer", None)
-            if not e.get("suggestion") or e.get("suggestion") == orig:
-                e = dict(e)
-                e["suggestion"] = DUP_SUGGESTION
-            kept.append(e)
-            continue
-        if e.get("suggestion") != orig:
-            kept.append(e)
-    merged = kept
+    merged = _keep_grounded(merged, text)
     duration = int((time.time() - t0) * 1000)
     return {
         "ok": True,

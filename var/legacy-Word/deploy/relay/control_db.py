@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS user_proof_facts (
   value TEXT NOT NULL,
   unit TEXT NOT NULL DEFAULT '',
   aliases TEXT NOT NULL DEFAULT '',
+  snippet TEXT NOT NULL DEFAULT '',
   created_at REAL NOT NULL,
   UNIQUE(user_id, label)
 );
@@ -267,6 +268,14 @@ def init_db() -> None:
         if "grp" not in cat_cols:
             conn.execute(
                 "ALTER TABLE categories ADD COLUMN grp TEXT NOT NULL DEFAULT ''"
+            )
+        fact_cols = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(user_proof_facts)").fetchall()
+        }
+        if fact_cols and "snippet" not in fact_cols:
+            conn.execute(
+                "ALTER TABLE user_proof_facts ADD COLUMN snippet TEXT NOT NULL DEFAULT ''"
             )
         _seed_official_content(conn, now)
         conn.commit()

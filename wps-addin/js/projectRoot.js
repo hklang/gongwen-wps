@@ -18,6 +18,13 @@
   var VERSION_AUTO_SUITE = "精修";
   var AUTO_VERSION_KEEP = 10;
   var META_DIR = ".gongwen";
+  var SESSION_FILE = "session.json";
+  var MEMORY_FILE = "memory.md";
+  var MEMORY_INJECT_MAX = 1500;
+  var MEMORY_STUB =
+    "# 工程记忆\n\n> 本工程写稿约定、已定框架。打开本工程时读取，换会话仍带给模型。\n\n";
+  var rootWillChangeFns = [];
+  var rootChangedFns = [];
   var LIST_RE = /\.docx?$/i;
   var OFFICE_RE = /\.docx?$/i;
   var TEXT_RE = /\.(md|txt)$/i;
@@ -327,13 +334,34 @@
     return root ? baseName(root.replace(/\\/g, "/")) : "";
   }
 
+  function onRootWillChange(fn) {
+    if (typeof fn === "function") rootWillChangeFns.push(fn);
+  }
+
+  function onRootChanged(fn) {
+    if (typeof fn === "function") rootChangedFns.push(fn);
+  }
+
+  function fireRootFns(list, prev, next) {
+    var i;
+    for (i = 0; i < list.length; i++) {
+      try {
+        list[i](prev, next);
+      } catch (eFire) {}
+    }
+  }
+
   function setRoot(absPath, name, manual) {
-    var root = String(absPath || "").replace(/[\\\/]+$/, "");
-    storeSet(ROOT_KEY, root);
-    storeSet(NAME_KEY, name || baseName(root.replace(/\\/g, "/")));
+    var next = String(absPath || "").replace(/[\\\/]+$/, "");
+    var prev = getRoot();
+    var changed = !samePath(prev, next);
+    if (changed && prev) fireRootFns(rootWillChangeFns, prev, next);
+    storeSet(ROOT_KEY, next);
+    storeSet(NAME_KEY, name || baseName(next.replace(/\\/g, "/")));
     storeSet(MANUAL_KEY, manual ? "1" : "");
-    ensureProjectLayout(root);
-    return root;
+    ensureProjectLayout(next);
+    if (changed) fireRootFns(rootChangedFns, prev, next);
+    return next;
   }
 
   function clearRoot() {
@@ -414,6 +442,12 @@
           if (wrote) created.push(".gongwen/wps.json");
         }
       } catch (eMeta) {}
+      try {
+        var mem = joinRoot(r, META_DIR + "\\" + MEMORY_FILE);
+        if (!fsExists(mem)) {
+          if (fsWriteText(mem, MEMORY_STUB)) created.push(".gongwen/memory.md");
+        }
+      } catch (eMem) {}
       if (missing.length) {
         return {
           ok: false,
@@ -1227,130 +1261,135 @@
     return n.indexOf(suitePrefix) === 0 ? "suite" : "write";
   }
 
+  function versionLaneRel(lane, kind) {
+    return lane === "auto"
+      ? autoLaneRel(kind)
+      : VERSION_DIR + "/" + VERSION_BOOKMARK;
+  }
+
+  function activeDocInfo() {
+    var app = global.Application;
+    if (!app || !app.ActiveDocument) return null;
+    var doc = app.ActiveDocument;
+    var rawName = "";
+    var full = "";
+    var wasSaved = true;
+    try {
+      rawName = String(doc.Name || "");
+    } catch (e0) {}
+    try {
+      full = String(doc.FullName || "");
+    } catch (e1) {}
+    try {
+      wasSaved = doc.Saved !== false;
+    } catch (e2) {}
+    if (!rawName) rawName = "未命名.docx";
+    if (!/\.docx?$/i.test(rawName)) rawName = rawName + ".docx";
+    return { doc: doc, rawName: rawName, full: full, wasSaved: wasSaved };
+  }
+
+  function tryCopyVersionFile(info, abs, steps) {
+    var hasDisk = !!(
+      info.full &&
+      /[\\/]/.test(info.full) &&
+      info.full !== info.rawName
+    );
+    if (!hasDisk) {
+      steps.push("原稿未落盘");
+      return { ok: false, hasDisk: false };
+    }
+    try {
+      if (!info.wasSaved) info.doc.Save();
+    } catch (eSave) {
+      steps.push("Save原稿失败:" + (eSave.message || eSave));
+    }
+    if (fsCopyFile(info.full, abs) && fsExists(abs)) {
+      return { ok: true, via: "copy", hasDisk: true };
+    }
+    steps.push("copy失败");
+    return { ok: false, hasDisk: true };
+  }
+
+  function trySaveCopyAsVersion(doc, abs, steps) {
+    try {
+      doc.SaveCopyAs(abs);
+      if (fsExists(abs)) return { ok: true, via: "SaveCopyAs" };
+      steps.push("SaveCopyAs无文件");
+    } catch (eCopyAs) {
+      steps.push("SaveCopyAs:" + (eCopyAs.message || eCopyAs));
+    }
+    return { ok: false };
+  }
+
+  function trySaveAsVersion(info, abs, hasDisk, steps) {
+    var r1 = callDocSaveAs(info.doc, abs);
+    if (!(r1.ok && fsExists(abs))) {
+      steps.push(hasDisk ? "存版本:" + (r1.error || "?") : "新稿另存:" + (r1.error || "失败"));
+      return { ok: false };
+    }
+    if (!hasDisk) {
+      steps.push("新稿另存成功");
+      return { ok: true, via: r1.via };
+    }
+    steps.push("存版本:" + (r1.via || "?"));
+    var via = "SaveAs2-restore";
+    var r2 = callDocSaveAs(info.doc, info.full);
+    steps.push("还原:" + (r2.via || r2.error || "?"));
+    try {
+      if (info.wasSaved) info.doc.Saved = true;
+    } catch (eSaved) {}
+    if (!r2.ok) via = "SaveAs2";
+    return { ok: true, via: via };
+  }
+
+  function writeVersionFile(info, abs, steps) {
+    var copied = tryCopyVersionFile(info, abs, steps);
+    if (copied.ok) return copied;
+    var copyAs = trySaveCopyAsVersion(info.doc, abs, steps);
+    if (copyAs.ok) return copyAs;
+    return trySaveAsVersion(info, abs, copied.hasDisk, steps);
+  }
+
   /**
    * 存版本到指定轨：书签=用户手动；自动=AI落稿（撰写/精修分夹）。
-   * 优先磁盘复制，其次 SaveCopyAs / SaveAs2。
+   * 优先磁盘复制，其次 SaveCopyAs / SaveAs2。存档不得改绑工程根。
    */
   function saveToVersionLane(lane, kind) {
     var steps = [];
     try {
-      var laneRel =
-        lane === "auto"
-          ? autoLaneRel(kind)
-          : VERSION_DIR + "/" + VERSION_BOOKMARK;
-      var resolved = resolveRoot();
-      var root = resolved.root;
+      var laneRel = versionLaneRel(lane, kind);
+      var root = currentRootNoRebind();
       if (!root) {
-        return {
-          ok: false,
-          error: resolved.unsaved
-            ? "请先保存当前文档以确定工程目录"
-            : "无工程根，请先保存文档或改绑"
-        };
+        return { ok: false, error: "无工程根，请先保存文档或改绑" };
       }
       ensureProjectLayout(root);
       steps.push("root=" + root);
       steps.push("lane=" + laneRel);
-
       var verDir = joinRoot(root, laneRel.replace(/\//g, "\\"));
       if (!fsExists(verDir) && !fsMkdir(verDir)) {
         return { ok: false, error: "无法创建版本目录：\n" + verDir };
       }
-
-      var app = global.Application;
-      if (!app || !app.ActiveDocument) {
-        return { ok: false, error: "当前无打开文档" };
-      }
-      var doc = app.ActiveDocument;
-      var rawName = "";
-      var full = "";
-      var wasSaved = true;
-      try {
-        rawName = String(doc.Name || "");
-      } catch (e0) {}
-      try {
-        full = String(doc.FullName || "");
-      } catch (e1) {}
-      try {
-        wasSaved = doc.Saved !== false;
-      } catch (e2) {}
-
-      if (!rawName) rawName = "未命名.docx";
-      if (!/\.docx?$/i.test(rawName)) rawName = rawName + ".docx";
-
-      var outName = versionTimeStamp() + "_" + safeFileName(rawName);
-      var rel = normRel(laneRel + "/" + outName);
+      var info = activeDocInfo();
+      if (!info) return { ok: false, error: "当前无打开文档" };
+      var rel = normRel(
+        laneRel + "/" + versionTimeStamp() + "_" + safeFileName(info.rawName)
+      );
       var abs = joinRoot(root, rel);
       steps.push("target=" + abs);
-
-      var hasDiskPath = !!(full && /[\\/]/.test(full) && full !== rawName);
-      var saved = false;
-      var via = "";
-
-      if (hasDiskPath) {
-        try {
-          if (!wasSaved) doc.Save();
-        } catch (eSave) {
-          steps.push("Save原稿失败:" + (eSave.message || eSave));
-        }
-        if (fsCopyFile(full, abs) && fsExists(abs)) {
-          saved = true;
-          via = "copy";
-        } else {
-          steps.push("copy失败");
-        }
-      } else {
-        steps.push("原稿未落盘");
-      }
-
-      if (!saved) {
-        try {
-          doc.SaveCopyAs(abs);
-          if (fsExists(abs)) {
-            saved = true;
-            via = "SaveCopyAs";
-          } else {
-            steps.push("SaveCopyAs无文件");
-          }
-        } catch (eCopyAs) {
-          steps.push("SaveCopyAs:" + (eCopyAs.message || eCopyAs));
-        }
-      }
-
-      if (!saved && hasDiskPath) {
-        var r1 = callDocSaveAs(doc, abs);
-        steps.push("存版本:" + (r1.via || r1.error || "?"));
-        if (r1.ok && fsExists(abs)) {
-          saved = true;
-          via = "SaveAs2-restore";
-          var r2 = callDocSaveAs(doc, full);
-          steps.push("还原:" + (r2.via || r2.error || "?"));
-          try {
-            if (wasSaved) doc.Saved = true;
-          } catch (eSaved) {}
-          if (!r2.ok) {
-            via = "SaveAs2";
-          }
-        }
-      } else if (!saved) {
-        var rNew = callDocSaveAs(doc, abs);
-        if (rNew.ok && fsExists(abs)) {
-          saved = true;
-          via = rNew.via;
-          steps.push("新稿另存成功");
-        } else {
-          steps.push("新稿另存:" + (rNew.error || "失败"));
-        }
-      }
-
-      if (!saved) {
+      var wr = writeVersionFile(info, abs, steps);
+      if (!wr.ok) {
         return {
           ok: false,
           error: "存版本失败\n目标：" + abs + "\n" + steps.join("\n")
         };
       }
-
-      var result = { ok: true, path: rel, abs: abs, via: via, lane: laneRel };
+      var result = {
+        ok: true,
+        path: rel,
+        abs: abs,
+        via: wr.via,
+        lane: laneRel
+      };
       if (lane === "auto") {
         result.pruned = pruneAutoVersions(root, rel, kind);
       }
@@ -1400,10 +1439,19 @@
     };
   }
 
+  function currentRootNoRebind() {
+    var root = getRoot();
+    if (root) return root;
+    try {
+      return resolveRoot().root || "";
+    } catch (e) {
+      return "";
+    }
+  }
+
   /** 清空某一自动夹（撰写或精修）；不改正文、不动书签 */
   function clearAutoLane(kind) {
-    var resolved = resolveRoot();
-    var root = resolved.root;
+    var root = currentRootNoRebind();
     if (!root) return { ok: false, error: "无工程根" };
     var k = kind === "suite" ? "suite" : "write";
     var relPrefix = autoLaneRel(k);
@@ -1422,7 +1470,7 @@
   /** 恢复某版本覆盖当前活动稿。文件还在即可还。 */
   function restoreVersionToActive(relPath) {
     try {
-      var root = resolveRoot().root;
+      var root = currentRootNoRebind();
       if (!root) return { ok: false, error: "无工程根" };
       var rel = normRel(relPath);
       if (!rel) return { ok: false, error: "路径无效" };
@@ -1565,6 +1613,69 @@
     };
   }
 
+  function metaAbsAt(root, name) {
+    var n = String(name || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!root || !n || n.indexOf("..") >= 0 || n.indexOf("/") >= 0) return "";
+    return joinRoot(root, META_DIR + "\\" + n);
+  }
+
+  function readMetaTextAt(root, name) {
+    var abs = metaAbsAt(root, name);
+    if (!abs || !fsExists(abs)) return null;
+    var t = fsReadText(abs);
+    return t == null ? null : String(t);
+  }
+
+  function writeMetaTextAt(root, name, text) {
+    if (!root) return false;
+    ensureProjectLayout(root);
+    var abs = metaAbsAt(root, name);
+    if (!abs) return false;
+    return fsWriteText(abs, String(text == null ? "" : text));
+  }
+
+  function readMetaJsonAt(root, name) {
+    var raw = readMetaTextAt(root, name);
+    if (raw == null) return null;
+    var s = String(raw).replace(/^\uFEFF/, "").trim();
+    if (!s) return null;
+    try {
+      return JSON.parse(s);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function writeMetaJsonAt(root, name, obj) {
+    try {
+      return writeMetaTextAt(root, name, JSON.stringify(obj));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function readMetaText(name) {
+    return readMetaTextAt(getRoot(), name);
+  }
+
+  function writeMetaText(name, text) {
+    return writeMetaTextAt(getRoot(), name, text);
+  }
+
+  function readMetaJson(name) {
+    return readMetaJsonAt(getRoot(), name);
+  }
+
+  function writeMetaJson(name, obj) {
+    return writeMetaJsonAt(getRoot(), name, obj);
+  }
+
+  function readMemoryInject(root) {
+    var t = readMetaTextAt(root || getRoot(), MEMORY_FILE);
+    if (!t) return "";
+    return String(t).trim().slice(0, MEMORY_INJECT_MAX);
+  }
+
   global.GwProject = {
     ROOT_KEY: ROOT_KEY,
     CITE_KEY: CITE_KEY,
@@ -1572,6 +1683,8 @@
     MATERIAL_DIR: MATERIAL_DIR,
     TEMPLATE_DIR: TEMPLATE_DIR,
     META_DIR: META_DIR,
+    SESSION_FILE: SESSION_FILE,
+    MEMORY_FILE: MEMORY_FILE,
     getRoot: getRoot,
     getName: getName,
     setRoot: setRoot,
@@ -1617,6 +1730,17 @@
     getWpsFs: getWpsFs,
     hasDiskApi: hasDiskApi,
     landTemplate: landTemplate,
-    safeTemplateFileName: safeTemplateFileName
+    safeTemplateFileName: safeTemplateFileName,
+    onRootWillChange: onRootWillChange,
+    onRootChanged: onRootChanged,
+    readMetaText: readMetaText,
+    writeMetaText: writeMetaText,
+    readMetaJson: readMetaJson,
+    writeMetaJson: writeMetaJson,
+    readMetaTextAt: readMetaTextAt,
+    writeMetaTextAt: writeMetaTextAt,
+    readMetaJsonAt: readMetaJsonAt,
+    writeMetaJsonAt: writeMetaJsonAt,
+    readMemoryInject: readMemoryInject
   };
 })(window);

@@ -15,7 +15,7 @@
 | `wps-addin/ui/settings.html` | **独立设置窗**（ShowDialog，约 920×720） |
 | `wps-addin/ui/cloud-templates.html` | **云端双轨模板窗**（官方 / 我的 → 下载到本机「模板」） |
 | `specs/` | 现行规格（文件名 `YYYY-MM-DD-序号-主题.md`） |
-| `Code/想构思.md` · `写代码.md` · `推版本.md` · `记方案.md` | 构思、落笔、交付纪律 |
+| `Code/` | 干活入口 `Code/总.md`（想构思 → 记方案 → 写代码 → 做测试 → 推版本） |
 | `var/legacy-Word/` | **旧项目参考**；本机中转暂仍从此启动（`deploy/relay`） |
 
 ## 调试

@@ -36,14 +36,22 @@ def main() -> int:
     assert listed["mustfix"][0]["right"] == "账户"
 
     facts = up.add_facts(
-        uid, [{"label": "营收", "value": "12.3", "unit": "亿元"}]
+        uid,
+        [
+            {
+                "snippet": "党员大会专题学习　16次\n线上学习　5次",
+                "recorded_at": "2026-08-18",
+            }
+        ],
     )
-    assert facts["items"][0]["label"] == "营收"
+    assert "16次" in facts["items"][0]["snippet"]
+    assert facts["items"][0]["recorded_at"] == "2026-08-18"
 
     pack = up.pack_for_proofread(uid)
     assert "国能投" in pack["whitelist"]
     assert pack["mustfix"][0]["wrong"] == "帐号"
-    assert pack["facts"][0]["value"] == "12.3"
+    assert pack["facts"][0]["snippet"].startswith("党员大会")
+    assert pack["facts"][0]["recorded_at"] == "2026-08-18"
 
     other = up.list_user_proof(uid2)
     assert other["whitelist"] == [] and other["mustfix"] == [] and other["facts"] == []
@@ -59,15 +67,51 @@ def main() -> int:
     empty = up.list_user_proof(uid)
     assert empty["whitelist"] == [] and empty["mustfix"] == [] and empty["facts"] == []
 
+    try:
+        up.add_facts(uid, [])
+        raise SystemExit("FAIL empty facts")
+    except ValueError:
+        pass
+
     import proofread as pr
-    import suggest
 
-    def fake_chat(msgs, **kwargs):
-        return '[{"label":"营收","value":"12.3","unit":"亿元"}]'
+    block = pr._facts_block(pack["facts"])
+    assert "2026年8月18日收录" in block
+    assert "党员大会专题学习" in block
+    legacy = pr._facts_block(
+        [{"label": "营收", "value": "12.3", "unit": "亿元"}]
+    )
+    assert "营收: 12.3亿元" in legacy
 
-    suggest._chat = fake_chat
-    extracted = pr.extract_facts("全年营收12.3亿元")
-    assert extracted and extracted[0]["label"] == "营收"
+    td2 = tempfile.mkdtemp(prefix="gongwen-uproof-mig-")
+    os.environ["CONTROL_DB"] = str(Path(td2) / "old.sqlite")
+    import sqlite3
+    from control_db import db_path
+
+    old = db_path()
+    old.parent.mkdir(parents=True, exist_ok=True)
+    raw = sqlite3.connect(str(old))
+    raw.execute(
+        "CREATE TABLE user_proof_facts ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "user_id INTEGER NOT NULL,"
+        "label TEXT NOT NULL,"
+        "value TEXT NOT NULL,"
+        "unit TEXT NOT NULL DEFAULT '',"
+        "aliases TEXT NOT NULL DEFAULT '',"
+        "created_at REAL NOT NULL,"
+        "UNIQUE(user_id, label))"
+    )
+    raw.commit()
+    raw.close()
+    from control_db import init_db as init_again
+
+    init_again()
+    uid3 = int(register("uproof3@test.local", "pass-uproof-1234", "")["user"]["id"])
+    mig = up.add_facts(
+        uid3, [{"snippet": "整段口径", "recorded_at": "2026-08-18"}]
+    )
+    assert mig["items"][0]["snippet"] == "整段口径"
     print("USER PROOF PASS")
     return 0
 

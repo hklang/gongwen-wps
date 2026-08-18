@@ -1,5 +1,5 @@
 /**
- * 校对条「收入」：划选写入账号云库。
+ * 校对条三键：划选写入账号云库（词典 / 必改 / 数据）。
  */
 (function (global) {
   var MAX_WORD = 40;
@@ -25,11 +25,14 @@
   }
 
   function needUser() {
+    if (global.GwAccount && GwAccount.ensureUserAccount) {
+      return GwAccount.ensureUserAccount();
+    }
     return GwRelay.me().catch(function () {
       if (global.GwAccount && GwAccount.open) {
         GwAccount.open({ forceForm: true, mode: "login" });
       }
-      var err = new Error("收入需要登录账号");
+      var err = new Error("写入词库需要登录账号");
       err.status = 401;
       throw err;
     });
@@ -46,23 +49,11 @@
     } catch (e2) {}
   }
 
-  function closeMenu() {
-    var m = $("proofIngestMenu");
-    if (m) m.hidden = true;
-  }
-
   function hidePanel() {
     var p = $("proofIngestPanel");
     if (!p) return;
     p.hidden = true;
     p.innerHTML = "";
-  }
-
-  function showPanel(html) {
-    var p = $("proofIngestPanel");
-    if (!p) return;
-    p.innerHTML = html;
-    p.hidden = false;
   }
 
   function splitMustfix(raw) {
@@ -72,10 +63,17 @@
     return { wrong: s.slice(0, MAX_WORD), right: "" };
   }
 
+  function activeCard() {
+    return (
+      (global.GwProofUi && GwProofUi.activeItem && GwProofUi.activeItem()) ||
+      null
+    );
+  }
+
   function ingestWhitelist() {
     var w = selText().replace(/\s+/g, "").slice(0, MAX_WORD);
     if (!w) {
-      alert("请先在正文划选要收入的词");
+      tip("请先在正文划选");
       return;
     }
     needUser()
@@ -83,23 +81,29 @@
         return GwRelay.mutateUserProof({ op: "add_whitelist", word: w });
       })
       .then(function () {
-        tip("已收入白名单「" + w + "」");
+        tip("已写入词典「" + w + "」");
       })
       .catch(fail);
   }
 
   function ingestMustfix() {
-    var pair = splitMustfix(selText());
-    if (!pair.wrong) {
-      alert("请先划选错误写法（或「错→对」）");
+    var raw = selText();
+    var pair = raw ? splitMustfix(raw) : { wrong: "", right: "" };
+    if (!pair.right) {
+      var card = activeCard();
+      var orig = card ? String(card.original || "").trim() : "";
+      var sug = card ? String(card.suggestion || "").trim() : "";
+      if (orig && sug) {
+        pair = {
+          wrong: orig.slice(0, MAX_WORD),
+          right: sug.slice(0, MAX_WORD)
+        };
+      }
+    }
+    if (!pair.wrong || !pair.right) {
+      tip(raw ? "请先划选「错→对」，或点一条校对结果" : "请先在正文划选");
       return;
     }
-    if (!pair.right) {
-      pair.right = String(
-        window.prompt("「" + pair.wrong + "」的正确写法", "") || ""
-      ).trim();
-    }
-    if (!pair.right) return;
     needUser()
       .then(function () {
         return GwRelay.mutateUserProof({
@@ -109,71 +113,47 @@
         });
       })
       .then(function () {
-        tip("已收入必改「" + pair.wrong + " → " + pair.right + "」");
+        tip("已写入必改「" + pair.wrong + " → " + pair.right + "」");
       })
       .catch(fail);
+  }
+
+  function todayYmd() {
+    var d = new Date();
+    function pad(n) {
+      return n < 10 ? "0" + n : String(n);
+    }
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  }
+
+  function cnDay(ymd) {
+    var m = String(ymd || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return ymd || "";
+    return m[1] + "年" + Number(m[2]) + "月" + Number(m[3]) + "日";
   }
 
   function ingestFacts() {
     var text = selText();
     if (!text) {
-      alert("请先划选含数字的正文");
+      tip("请先在正文划选");
       return;
     }
-    tip("正在抽出数字…");
+    if (text.length > 4000) {
+      tip("选区过长，请划一小段再收录");
+      return;
+    }
+    hidePanel();
+    var day = todayYmd();
     needUser()
       .then(function () {
-        return GwRelay.mutateUserProof({ op: "extract_facts", text: text });
+        return GwRelay.mutateUserProof({
+          op: "add_facts",
+          snippet: text,
+          recorded_at: day
+        });
       })
-      .then(function (data) {
-        var items = (data && data.items) || [];
-        if (!items.length) {
-          tip("选区里没有抽出数字");
-          alert("选区里没有抽出可对照的数字");
-          return;
-        }
-        showPanel(
-          '<p class="ai-proof-ingest-h">抽出 ' +
-            items.length +
-            " 条，确认后入库</p>" +
-            items
-              .map(function (it, i) {
-                return (
-                  '<label class="ai-proof-ingest-row"><input type="checkbox" checked data-fi="' +
-                  i +
-                  '" /> ' +
-                  String(it.label || "") +
-                  "　" +
-                  String(it.value || "") +
-                  String(it.unit || "") +
-                  "</label>"
-                );
-              })
-              .join("") +
-            '<div class="ai-proof-ingest-acts">' +
-            '<button type="button" class="primary" id="proofFactOk">确认收入</button>' +
-            '<button type="button" id="proofFactCancel">取消</button></div>'
-        );
-        $("proofFactCancel").onclick = hidePanel;
-        $("proofFactOk").onclick = function () {
-          var picked = [];
-          Array.prototype.forEach.call(
-            $("proofIngestPanel").querySelectorAll("[data-fi]"),
-            function (cb) {
-              if (cb.checked) picked.push(items[Number(cb.getAttribute("data-fi"))]);
-            }
-          );
-          if (!picked.length) {
-            alert("请至少勾一条");
-            return;
-          }
-          GwRelay.mutateUserProof({ op: "add_facts", items: picked })
-            .then(function () {
-              hidePanel();
-              tip("已收入 " + picked.length + " 条数字");
-            })
-            .catch(fail);
-        };
+      .then(function () {
+        tip("已收录（" + cnDay(day) + "）");
       })
       .catch(fail);
   }
@@ -200,26 +180,16 @@
   }
 
   function init() {
-    var btn = $("proofIngest");
-    var menu = $("proofIngestMenu");
-    if (!btn || !menu) return;
-    btn.onclick = function (e) {
-      e.stopPropagation();
-      menu.hidden = !menu.hidden;
-    };
-    menu.onclick = function (e) {
+    var wrap = $("proofIngestWrap");
+    if (!wrap) return;
+    wrap.onclick = function (e) {
       var b = e.target.closest("[data-ingest]");
       if (!b) return;
-      closeMenu();
       var k = b.getAttribute("data-ingest");
       if (k === "whitelist") ingestWhitelist();
       else if (k === "mustfix") ingestMustfix();
       else if (k === "facts") ingestFacts();
     };
-    document.addEventListener("click", function (e) {
-      if (!e.target.closest || e.target.closest("#proofIngestWrap")) return;
-      closeMenu();
-    });
   }
 
   global.GwProofIngest = { init: init, absorbIssue: absorbIssue, hidePanel: hidePanel };

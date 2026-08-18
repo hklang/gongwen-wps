@@ -63,36 +63,76 @@
     return true;
   }
 
-  /** 启动：优先运维票放行；否则再试测试账号登录 */
+  function hasUserEmail() {
+    return (GwRelay.tokens().email || "").indexOf("@") >= 0;
+  }
+
+  function loginDebugUser() {
+    return GwRelay.login(DEBUG.email, DEBUG.password).catch(function () {
+      return GwRelay.register(DEBUG.email, DEBUG.password, "");
+    });
+  }
+
+  function failNeedUser() {
+    openModal({ forceForm: true, mode: "login" });
+    tip("请先登录账号");
+    var err = new Error("写入词库需要登录账号");
+    err.status = 401;
+    throw err;
+  }
+
+  /** 云表必须用户短票。已登录的独立账号直接用；否则静默登测试账号，不弹窗。 */
+  function ensureUserAccount() {
+    ensureBase();
+    if (hasUserEmail()) {
+      return GwRelay.ensureAccess().then(function (ok) {
+        refreshButton();
+        if (ok && GwRelay.tokens().access) return true;
+        return loginDebugUser()
+          .then(function () {
+            refreshButton();
+            refreshTip();
+            return true;
+          })
+          .catch(failNeedUser);
+      });
+    }
+    return loginDebugUser()
+      .then(function () {
+        refreshButton();
+        refreshTip();
+        return true;
+      })
+      .catch(failNeedUser);
+  }
+
+  /** 启动：已有独立账号则保留；否则登测试账号；再不行才垫运维票 */
   function bootstrapDebugSession() {
     if (state.boot) return state.boot;
     ensureBase();
     state.boot = Promise.resolve()
       .then(function () {
-        if (applyLegacyBypass()) return true;
-        return GwRelay.ensureAccess().then(function (ok) {
-          if (ok && GwRelay.tokens().access) return true;
-          tip("正在用测试账号登录…");
-          return GwRelay.login(DEBUG.email, DEBUG.password)
-            .then(function () {
-              return true;
-            })
-            .catch(function () {
-              return GwRelay.register(DEBUG.email, DEBUG.password, "").then(
-                function () {
-                  return true;
-                }
-              );
-            });
-        });
+        if (hasUserEmail()) {
+          return GwRelay.ensureAccess().then(function (ok) {
+            return !!(ok && GwRelay.tokens().access);
+          });
+        }
+        tip("正在用测试账号登录…");
+        return loginDebugUser()
+          .then(function () {
+            return true;
+          })
+          .catch(function () {
+            return applyLegacyBypass();
+          });
       })
       .then(function (ok) {
         refreshButton();
         if (ok && GwRelay.tokens().access) {
           tip(
-            DEBUG.AUTO_BYPASS_QUOTA
-              ? "测试模式已开启 · 不限额度"
-              : "测试账号已登录 · " + DEBUG.email
+            hasUserEmail()
+              ? "已登录 · " + GwRelay.tokens().email
+              : "测试模式已开启 · 不限额度"
           );
           return true;
         }
@@ -411,14 +451,7 @@
     ensureDom();
     fillDebugForm();
     refreshButton();
-    tip(DEBUG.AUTO_BYPASS_QUOTA ? "正在开启测试模式…" : "正在准备测试账号…");
-    /* 清掉旧用户短票，避免继续撞额度 */
-    if (DEBUG.AUTO_BYPASS_QUOTA) {
-      try {
-        GwRelay.clearSession();
-      } catch (e0) {}
-      state.boot = null;
-    }
+    tip("正在确认测试账号…");
     bootstrapDebugSession().then(function (ok) {
       refreshButton();
       if (!ok) refreshTip();
@@ -430,6 +463,7 @@
     open: openModal,
     close: closeModal,
     requireLogin: requireLogin,
+    ensureUserAccount: ensureUserAccount,
     refresh: function () {
       refreshButton();
       refreshTip();

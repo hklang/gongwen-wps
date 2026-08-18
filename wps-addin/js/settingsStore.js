@@ -44,6 +44,7 @@
         sceneEngineMap: JSON.parse(JSON.stringify(SCENES_DEFAULT)),
         whitelist: [],
         mustfix: [],
+        industryPack: true,
         factGroups: [
           { id: "default", name: "默认", enabled: true, items: [] }
         ],
@@ -171,6 +172,7 @@
       d.proof.sceneEngineMap = mergeSceneMap(p.sceneEngineMap);
       d.proof.whitelist = normalizeWhitelist(p.whitelist);
       d.proof.mustfix = normalizeMustfix(p.mustfix);
+      d.proof.industryPack = p.industryPack !== false;
       if (Array.isArray(p.factGroups) && p.factGroups.length) {
         d.proof.factGroups = p.factGroups.map(function (g, i) {
           return {
@@ -273,6 +275,10 @@
     return normalizeMustfix(((cfg || load()).proof || {}).mustfix);
   }
 
+  function proofIndustryPack(cfg) {
+    return ((cfg || load()).proof || {}).industryPack !== false;
+  }
+
   function proofFacts(cfg) {
     var s = (cfg || load()).proof || {};
     var groups = s.factGroups || [];
@@ -314,6 +320,7 @@
     proofDefaultScope: proofDefaultScope,
     proofWhitelist: proofWhitelist,
     proofMustfix: proofMustfix,
+    proofIndustryPack: proofIndustryPack,
     proofFacts: proofFacts,
     suiteCount: suiteCount,
     suiteOptView: suiteOptView,

@@ -276,6 +276,8 @@
       if (extra.whitelist) body.whitelist = extra.whitelist;
       if (extra.mustfix) body.mustfix = extra.mustfix;
       if (extra.facts) body.facts = extra.facts;
+      if (extra.industryPack === false) body.industryPack = false;
+      else if (extra.industryPack === true) body.industryPack = true;
     }
     return request("POST", "/api/proofread", body);
   }

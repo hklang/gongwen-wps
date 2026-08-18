@@ -2,7 +2,9 @@
 """用户校对词库/数字表（按账号隔离；非文稿仓）。"""
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import time
 from typing import Any
 
@@ -15,6 +17,8 @@ MAX_WORD = 40
 MAX_FACT_LABEL = 40
 MAX_FACT_VALUE = 40
 MAX_FACT_UNIT = 16
+MAX_SNIPPET = 4000
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _uid(user_id: int) -> int:
@@ -37,6 +41,37 @@ def _aliases_dump(raw: Any) -> str:
         parts = []
     parts = parts[:8]
     return json.dumps(parts, ensure_ascii=False) if parts else ""
+
+
+def _snippet_key(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _day_str(raw: Any, ts: float) -> str:
+    s = str(raw or "").strip()
+    if _DAY_RE.match(s):
+        return s
+    return time.strftime("%Y-%m-%d", time.localtime(ts or time.time()))
+
+
+def _fact_from_row(r: Any) -> dict[str, Any]:
+    keys = set(r.keys())
+    snippet = str(r["snippet"] or "").strip() if "snippet" in keys else ""
+    value = r["value"] or ""
+    recorded = ""
+    if snippet and _DAY_RE.match(str(value).strip()):
+        recorded = str(value).strip()
+    elif "created_at" in keys and r["created_at"]:
+        recorded = time.strftime("%Y-%m-%d", time.localtime(float(r["created_at"])))
+    return {
+        "id": int(r["id"]),
+        "label": r["label"] or "",
+        "value": value,
+        "unit": r["unit"] or "",
+        "aliases": _aliases_load(r["aliases"] or "") if "aliases" in keys else [],
+        "snippet": snippet,
+        "recorded_at": recorded,
+    }
 
 
 def _aliases_load(raw: str) -> list[str]:
@@ -65,7 +100,7 @@ def list_user_proof(user_id: int) -> dict[str, Any]:
             (uid,),
         ).fetchall()
         facts = conn.execute(
-            "SELECT id,label,value,unit,aliases FROM user_proof_facts"
+            "SELECT id,label,value,unit,aliases,snippet,created_at FROM user_proof_facts"
             " WHERE user_id=? ORDER BY id DESC",
             (uid,),
         ).fetchall()
@@ -76,16 +111,7 @@ def list_user_proof(user_id: int) -> dict[str, Any]:
             {"id": int(r["id"]), "wrong": r["wrong"] or "", "right": r["right"] or ""}
             for r in mf
         ],
-        "facts": [
-            {
-                "id": int(r["id"]),
-                "label": r["label"] or "",
-                "value": r["value"] or "",
-                "unit": r["unit"] or "",
-                "aliases": _aliases_load(r["aliases"] or ""),
-            }
-            for r in facts
-        ],
+        "facts": [_fact_from_row(r) for r in facts],
         "limit": {
             "whitelist": MAX_WHITELIST,
             "mustfix": MAX_MUSTFIX,
@@ -104,14 +130,21 @@ def pack_for_proofread(user_id: int) -> dict[str, Any]:
             if x.get("wrong") and x.get("right")
         ],
         "facts": [
-            {
-                "label": x["label"],
-                "value": x["value"],
-                "unit": x.get("unit") or "",
-                "aliases": x.get("aliases") or [],
-            }
+            (
+                {
+                    "snippet": x["snippet"],
+                    "recorded_at": x.get("recorded_at") or "",
+                }
+                if x.get("snippet")
+                else {
+                    "label": x["label"],
+                    "value": x["value"],
+                    "unit": x.get("unit") or "",
+                    "aliases": x.get("aliases") or [],
+                }
+            )
             for x in data["facts"]
-            if x.get("label") and x.get("value")
+            if x.get("snippet") or (x.get("label") and x.get("value"))
         ],
     }
 
@@ -184,8 +217,9 @@ def add_facts(user_id: int, items: list[dict]) -> dict[str, Any]:
     init_db()
     uid = _uid(user_id)
     if not isinstance(items, list) or not items:
-        raise ValueError("没有可收入的数字")
+        raise ValueError("没有可收入的原文")
     out: list[dict[str, Any]] = []
+    now = time.time()
     with connect() as conn:
         n = int(
             conn.execute(
@@ -195,46 +229,87 @@ def add_facts(user_id: int, items: list[dict]) -> dict[str, Any]:
         for it in items[:MAX_FACTS]:
             if not isinstance(it, dict):
                 continue
-            label = _clip(it.get("label"), MAX_FACT_LABEL)
-            value = _clip(it.get("value"), MAX_FACT_VALUE)
-            unit = _clip(it.get("unit"), MAX_FACT_UNIT)
-            if not label or not value:
+            saved = _upsert_fact(conn, uid, it, n, now)
+            if not saved:
                 continue
-            aliases = _aliases_dump(it.get("aliases"))
-            row = conn.execute(
-                "SELECT id FROM user_proof_facts WHERE user_id=? AND label=?",
-                (uid, label),
-            ).fetchone()
-            if row:
-                conn.execute(
-                    "UPDATE user_proof_facts SET value=?, unit=?, aliases=?, created_at=?"
-                    " WHERE id=? AND user_id=?",
-                    (value, unit, aliases, time.time(), int(row["id"]), uid),
-                )
-                fid = int(row["id"])
-            else:
-                if n >= MAX_FACTS:
-                    raise ValueError("数字表已达上限（%d）" % MAX_FACTS)
-                cur = conn.execute(
-                    "INSERT INTO user_proof_facts"
-                    "(user_id,label,value,unit,aliases,created_at)"
-                    " VALUES(?,?,?,?,?,?)",
-                    (uid, label, value, unit, aliases, time.time()),
-                )
-                fid = int(cur.lastrowid)
-                n += 1
-            out.append(
-                {
-                    "id": fid,
-                    "label": label,
-                    "value": value,
-                    "unit": unit,
-                    "aliases": _aliases_load(aliases),
-                }
-            )
+            item, n = saved
+            out.append(item)
     if not out:
-        raise ValueError("没有可收入的数字")
+        raise ValueError("没有可收入的原文")
     return {"ok": True, "items": out}
+
+
+def _fact_row(conn, uid: int, label: str):
+    return conn.execute(
+        "SELECT id FROM user_proof_facts WHERE user_id=? AND label=?",
+        (uid, label),
+    ).fetchone()
+
+
+def _insert_fact(conn, uid: int, n: int, values: tuple):
+    if n >= MAX_FACTS:
+        raise ValueError("数据已达上限（%d）" % MAX_FACTS)
+    cur = conn.execute(
+        "INSERT INTO user_proof_facts"
+        "(user_id,label,value,unit,aliases,snippet,created_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (uid,) + values,
+    )
+    return int(cur.lastrowid), n + 1
+
+
+def _upsert_snippet_fact(conn, uid: int, it: dict, n: int, now: float, snippet: str):
+    key = _snippet_key(snippet)
+    day = _day_str(it.get("recorded_at") or it.get("date"), now)
+    row = _fact_row(conn, uid, key)
+    if row:
+        conn.execute(
+            "UPDATE user_proof_facts SET snippet=?, value=?, created_at=?"
+            " WHERE id=? AND user_id=?",
+            (snippet, day, now, int(row["id"]), uid),
+        )
+        fid = int(row["id"])
+    else:
+        fid, n = _insert_fact(conn, uid, n, (key, day, "", "", snippet, now))
+    return ({"id": fid, "snippet": snippet, "recorded_at": day}, n)
+
+
+def _upsert_label_fact(conn, uid: int, it: dict, n: int, now: float):
+    label = _clip(it.get("label"), MAX_FACT_LABEL)
+    value = _clip(it.get("value"), MAX_FACT_VALUE)
+    unit = _clip(it.get("unit"), MAX_FACT_UNIT)
+    if not label or not value:
+        return None
+    aliases = _aliases_dump(it.get("aliases"))
+    row = _fact_row(conn, uid, label)
+    if row:
+        conn.execute(
+            "UPDATE user_proof_facts SET value=?, unit=?, aliases=?, created_at=?"
+            " WHERE id=? AND user_id=?",
+            (value, unit, aliases, now, int(row["id"]), uid),
+        )
+        fid = int(row["id"])
+    else:
+        fid, n = _insert_fact(
+            conn, uid, n, (label, value, unit, aliases, "", now)
+        )
+    return (
+        {
+            "id": fid,
+            "label": label,
+            "value": value,
+            "unit": unit,
+            "aliases": _aliases_load(aliases),
+        },
+        n,
+    )
+
+
+def _upsert_fact(conn, uid: int, it: dict, n: int, now: float):
+    snippet = _clip(it.get("snippet") or it.get("text") or "", MAX_SNIPPET)
+    if snippet:
+        return _upsert_snippet_fact(conn, uid, it, n, now, snippet)
+    return _upsert_label_fact(conn, uid, it, n, now)
 
 
 def delete_item(user_id: int, kind: str, item_id: int) -> dict[str, Any]:
@@ -270,7 +345,11 @@ def handle_post(user_id: int, body: dict, *, provider=None, model=None) -> dict[
             (body or {}).get("right") or (body or {}).get("suggestion") or "",
         )
     if op in ("add_facts", "facts"):
+        snippet = (body or {}).get("snippet") or (body or {}).get("text") or ""
+        recorded = (body or {}).get("recorded_at") or (body or {}).get("date") or ""
         items = (body or {}).get("items") or (body or {}).get("facts") or []
+        if str(snippet).strip():
+            items = [{"snippet": snippet, "recorded_at": recorded}]
         return add_facts(user_id, items if isinstance(items, list) else [])
     if op == "delete":
         return delete_item(
